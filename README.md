@@ -27,6 +27,7 @@ Create a `.env` file or set these in Render:
 - `SALESFORCE_ACCESS_TOKEN`: If face accessing SF org
 - `SALESFORCE_INSTANCE_URL`
 - `SCHEMA_CACHE_TTL`
+- `ENABLE_PERSISTENT_CACHE`
 
 ## 📦 Installation
 ```bash
