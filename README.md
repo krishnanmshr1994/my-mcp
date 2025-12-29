@@ -34,7 +34,16 @@ Create a `.env` file or set these in Render:
 npm install
 npm start
 ```
-###🔌 Endpoints
+### Start Command
+```bash
+node http-server.js
+```
+### Build Comand
+```bash
+npm install
+```
+---
+### 🔌Endpoints
    GET  /health
    GET  /schema
    GET  /schema/:objectName
@@ -46,7 +55,7 @@ npm start
    POST /smart-query
    POST /chat
 
----
+
 
 ### 2. `.gitignore`
 Crucial to prevent your private keys from being uploaded to GitHub.
