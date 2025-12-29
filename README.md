@@ -44,17 +44,16 @@ npm install
 ```
 ---
 ### 🔌Endpoints
-   GET  /health
-   GET  /schema
-   GET  /schema/:objectName
-   POST /query
-   POST /create
-   POST /update
-   POST /delete
-   POST /generate-soql
-   POST /smart-query
-   POST /chat
-
+- GET  /health
+- GET  /schema
+- GET  /schema/:objectName
+- POST /query
+- POST /create
+- POST /update
+- POST /delete
+- POST /generate-soql
+- POST /smart-query
+- POST /chat
 
 
 ### 2. `.gitignore`
