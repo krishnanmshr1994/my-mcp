@@ -16,6 +16,33 @@ A powerful Salesforce middleware that uses **NVIDIA Llama-3** to intelligently q
 
  ### Root Directory
  - mcp-provider-api
+   
+## ✨ Features
+
+🔐 Secure Salesforce connection
+
+📚 Full org schema discovery
+
+🔍 Raw SOQL execution
+
+✍️ Create, update, and delete records
+
+🤖 Natural language → SOQL using LLM
+
+🧠 Smart queries (generate → execute → explain)
+
+💬 Chat interface with optional schema context
+
+
+### 🧱 Tech Stack
+
+- Backend: Node.js (Express)
+
+- CRM: Salesforce REST API
+
+- AI: OpenAI / compatible LLM
+
+- Auth: Salesforce OAuth 2.0
 
 ### Environment Variables
 Create a `.env` file or set these in Render:
@@ -55,6 +82,34 @@ npm install
 - POST /smart-query
 - POST /chat
 
+### 📌 API Endpoints
+
+| Endpoint | Purpose |
+|----------|----------|
+| GET /health | Checks server and Salesforce connection status |
+| GET /schema | Lists all org objects |
+| GET /schema/:objectName | Gets fields of a specific object |
+| POST /query | Executes raw SOQL |
+| POST /create | Creates a record |
+| POST /update | Updates a record |
+| POST /delete | Deletes a record |
+| POST /describe-object | Returns object schema + sample data |
+| POST /generate-soql | Uses LLM to convert natural language to SOQL |
+| POST /smart-query | Generates SOQL executes → explains results |
+| POST /chat | Chat interface with optional schema context |markdown
+
+Method	Endpoint	Purpose
+- GET	/health	Checks server and Salesforce connection status
+- GET	/schema	Lists all Salesforce org objects
+- GET	/schema/:objectName	Gets fields of a specific object
+- POST	/query	Executes raw SOQL
+- POST	/create	Creates a record
+- POST	/update	Updates a record
+- POST	/delete	Deletes a record
+- POST	/describe-object	Returns object schema and sample data
+- POST	/generate-soql	Converts natural language to SOQL using LLM
+- POST	/smart-query	Generates SOQL, executes it, and explains results
+- POST	/chat	Chat interface with optional schema context
 
 ### 2. `.gitignore`
 Crucial to prevent your private keys from being uploaded to GitHub.
