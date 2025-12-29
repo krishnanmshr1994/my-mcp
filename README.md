@@ -1,4 +1,4 @@
-# Salesforce AI Agent (MCP + NVIDIA NIM)
+# Salesforce AI Agent (MCP + NVIDIA LLM)
 
 A powerful Salesforce middleware that uses **NVIDIA Llama-3** to intelligently query and manage Salesforce data via the **Model Context Protocol (MCP)**.
 
