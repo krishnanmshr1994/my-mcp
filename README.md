@@ -14,6 +14,9 @@ A powerful Salesforce middleware that uses **NVIDIA Llama-3** to intelligently q
 - Salesforce Developer Org
 - NVIDIA API Key (from NVIDIA API Catalog)
 
+ ### Root Directory
+ - mcp-provider-api
+
 ### Environment Variables
 Create a `.env` file or set these in Render:
 - `SALESFORCE_USERNAME`
