@@ -500,27 +500,11 @@ app.post('/generate-soql', async (req, res) => {
 app.post('/summarize', async (req, res) => {
     try {
         if (!NVIDIA_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
+        const { textData, isChunk, isFinal } = req.body;
 
-        const { textData, isChunk, isFinal, chunkNumber, totalChunks } = req.body;
-
-        // 1. Define the exact Schema we want (NVIDIA NIM Structured Output)
-        const jsonSchema = {
-            type: "object",
-            properties: {
-                summary: { type: "string" },
-                sentiment: { type: "string", enum: ["Positive", "Neutral", "Negative"] }
-            },
-            required: ["summary", "sentiment"]
-        };
-
-        let systemPrompt;
-        if (isChunk) {
-            systemPrompt = `Summarize news chunk ${chunkNumber}/${totalChunks}. Provide key points only.`;
-        } else if (isFinal) {
-            systemPrompt = `Create a final executive summary using <ul><li> tags from these partial summaries.`;
-        } else {
-            systemPrompt = `Summarize this news article concisely.`;
-        }
+        const systemPrompt = `You are a JSON-only response bot. 
+        Return ONLY valid JSON. No preamble. No markdown. No explanations.
+        Required Format: {"summary": "your text here", "sentiment": "Neutral"}`;
 
         const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
             method: "POST",
@@ -534,34 +518,48 @@ app.post('/summarize', async (req, res) => {
                     { role: "system", content: systemPrompt },
                     { role: "user", content: textData }
                 ],
-                // THE SECRET SAUCE: Tell NVIDIA exactly what JSON structure to follow
-                response_format: { 
-                    type: "json_object",
-                    schema: jsonSchema 
-                },
-                temperature: 0.1
+                temperature: 0.1,
+                // Remove response_format: {type: 'json_object'} if it keeps failing, 
+                // as some NVIDIA endpoints handle it poorly.
             })
         });
 
-        if (!response.ok) throw new Error(`NVIDIA Error: ${response.status}`);
+        const data = await response.json();
+        let content = data.choices[0].message.content.trim();
+        console.log(`Raw summary response: ${content}`);
 
-        const result = await response.json();
-        let content = result.choices[0].message.content.trim();
-
-        // Safety: Sometimes NIM still wraps in markdown blocks despite the schema
+        // --- THE "BULLETPROOF" CLEANER ---
+        // 1. Remove markdown blocks
         content = content.replace(/```json|```/g, "").trim();
-
-        // Final Parse
+        console.log(`Remove markdown blocks summary response: ${content}`);
+        // 2. Find the FIRST '{' and the LAST '}'
+        const firstBracket = content.indexOf('{');
+        const lastBracket = content.lastIndexOf('}');
+        
+        if (firstBracket === -1 || lastBracket === -1) {
+            throw new Error("No JSON object found in LLM response");
+        }
+        
+        // 3. Slice the string to get ONLY the JSON block
+        content = content.substring(firstBracket, lastBracket + 1);
+        console.log(`Removed bracket summary response: ${content}`);
+        // 4. Sanitize internal newlines that break JSON parsing
+        content = content.replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+        console.log(`Removed regex summary response: ${content}`);
+        // 5. Attempt Parse
         const finalJson = JSON.parse(content);
-        console.log(`✅ ${isFinal ? 'Final' : 'Chunk'} summary generated.`);
+        console.log(`final summary response: ${content}`);
         res.json(finalJson);
 
     } catch (error) {
-        console.error('❌ Server Error:', error.message);
-        res.status(500).json({ summary: "Error processing text", sentiment: "Neutral" });
+        console.error('❌ Final Failure:', error.message);
+        // Fallback so the LWC doesn't break
+        res.status(200).json({ 
+            summary: "Error parsing result. Check server logs.", 
+            sentiment: "Neutral" 
+        });
     }
 });
-
 app.post('/smart-query', async (req, res) => {
   try {
     if (!NVIDIA_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
