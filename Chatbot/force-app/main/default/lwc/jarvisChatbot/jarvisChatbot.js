@@ -143,23 +143,54 @@ export default class JarvisChatbot extends LightningElement {
             const hasRecords = rawRecords && Array.isArray(rawRecords) && rawRecords.length > 0;
             
             if (hasRecords) {
-                const columnKeys = Object.keys(rawRecords[0]).filter(k => k !== 'attributes');
-                columns = columnKeys.map(k => ({ label: k, fieldName: k, type: 'text' }));
-                processedRecords = rawRecords.map((r, idx) => {
-                    const record = {
-                        Id: r.Id || `rec-${idx}`
-                    };
-                    const fields = [];
-                    columnKeys.forEach(key => {
-                        fields.push({
+                const firstRecord = rawRecords[0];
+                
+                // Check if this is an aggregate query (has expr0, expr1, etc. or aggregate fields)
+                const isAggregateQuery = Object.keys(firstRecord).some(key => 
+                    key.startsWith('expr') || 
+                    key === 'count' || 
+                    firstRecord[key] === null && Object.keys(firstRecord).length <= 2
+                );
+                
+                if (isAggregateQuery) {
+                    // Handle aggregate results differently
+                    const aggregateKeys = Object.keys(firstRecord).filter(k => k !== 'attributes');
+                    
+                    // Create a single "result" record for aggregates
+                    columns = aggregateKeys.map((k, idx) => ({ 
+                        label: k.startsWith('expr') ? `Result ${idx + 1}` : k, 
+                        fieldName: k, 
+                        type: 'text' 
+                    }));
+                    
+                    processedRecords = [{
+                        Id: 'aggregate-result',
+                        fields: aggregateKeys.map((key, idx) => ({
                             name: key,
-                            label: key,
-                            value: r[key] != null ? String(r[key]) : ''
+                            label: key.startsWith('expr') ? `Result ${idx + 1}` : key,
+                            value: firstRecord[key] != null ? String(firstRecord[key]) : 'No data'
+                        }))
+                    }];
+                } else {
+                    // Handle normal records
+                    const columnKeys = Object.keys(firstRecord).filter(k => k !== 'attributes');
+                    columns = columnKeys.map(k => ({ label: k, fieldName: k, type: 'text' }));
+                    processedRecords = rawRecords.map((r, idx) => {
+                        const record = {
+                            Id: r.Id || `rec-${idx}`
+                        };
+                        const fields = [];
+                        columnKeys.forEach(key => {
+                            fields.push({
+                                name: key,
+                                label: key,
+                                value: r[key] != null ? String(r[key]) : ''
+                            });
                         });
+                        record.fields = fields;
+                        return record;
                     });
-                    record.fields = fields;
-                    return record;
-                });
+                }
             }
 
             // Check if explanation exists and is not empty
@@ -196,13 +227,17 @@ export default class JarvisChatbot extends LightningElement {
                 this.conversationHistory = [...this.conversationHistory, {
                     question: userText,
                     soql: data.soql,
-                    recordCount: data.recordCount || 0
+                    recordCount: data.recordCount || 0,
+                    results: rawRecords || [] // Store actual results for LLM calculations
                 }];
                 
                 // Keep only last 5 conversations to avoid token limits
                 if (this.conversationHistory.length > 5) {
                     this.conversationHistory = this.conversationHistory.slice(-5);
                 }
+            } else if (endpoint === '/smart-query' && data.calculatedByLLM) {
+                // For LLM-calculated results, don't add to history as it doesn't have new data
+                console.log('Result calculated by LLM, not adding to history');
             }
             
         } catch (e) { 
