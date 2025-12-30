@@ -1,31 +1,50 @@
 <template>
-	<template if:true={renderNews}>
-		<div  class="flip-card" onclick={handleFlip}>
-			<div class={cardClass}>
-				<div class="flip-card-front">
-					<lightning-card title={newsArticles.header} icon-name="standard:richtextbulletedlist">
-						<div class="slds-col slds-size_1-of-1">
-							<article>
-								{newsArticles.content}
-							</article>
-						</div>
-					</lightning-card>
-				</div>
-				<div class="flip-card-back">
-					<lightning-card title="Sources">
-						<div class="slds-col slds-size_1-of-1" style="background:black;">
-							<template for:each={newsArticles.source} for:item="item">
-								<li key={item}>
-									{item}
-								</li>
-							</template>
-						</div>
-					</lightning-card>
-				</div>
-			</div>
-		</div>
-	</template>
-	<template if:false={renderNews}>
-		<lightning-spinner alternative-text="Loading"></lightning-spinner>
-	</template>
+    <template if:true={renderNews}>
+        <div class="flip-card" onclick={handleFlip}>
+            <div class={cardClass}>
+                
+                <div class="flip-card-front">
+                    <lightning-card title={newsArticles.header} icon-name="standard:news">
+                        <div slot="actions">
+                            <span class={sentimentClass}>
+                                <lightning-icon 
+                                    icon-name={sentimentIcon} 
+                                    size="x-small" 
+                                    variant={sentimentVariant}>
+                                </lightning-icon>
+                                <span class="slds-m-left_xx-small">{sentiment}</span>
+                            </span>
+                        </div>
+
+                        <div class="slds-p-around_medium content-area">
+                            <lightning-formatted-rich-text value={newsArticles.content}>
+                            </lightning-formatted-rich-text>
+                        </div>
+                        
+                        <p class="footer-text">Click to see sources</p>
+                    </lightning-card>
+                </div>
+
+                <div class="flip-card-back">
+                    <lightning-card title="Sources" icon-name="standard:announcement">
+                        <div class="slds-p-around_medium content-area">
+                            <ul class="slds-list_dotted">
+                                <template for:each={newsArticles.source} for:item="item">
+                                    <li key={item} class="slds-m-bottom_x-small">{item}</li>
+                                </template>
+                            </ul>
+                        </div>
+                        <p class="footer-text">Click to return</p>
+                    </lightning-card>
+                </div>
+
+            </div>
+        </div>
+    </template>
+
+    <template if:false={renderNews}>
+        <div class="spinner-container">
+            <lightning-spinner alternative-text="Analyzing News..." size="medium"></lightning-spinner>
+        </div>
+    </template>
 </template>

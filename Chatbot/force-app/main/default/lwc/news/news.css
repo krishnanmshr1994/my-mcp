@@ -1,10 +1,20 @@
-/* Ensure the flip card takes up available width but handles its own 3D space */
-.flip-card {
-    background-color: transparent;
+:host {
+    display: block;
     width: 100%;
-    height: 450px; /* Adjusted height for mobile screens */
+}
+
+.spinner-container {
+    height: 350px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #dddbda;
+}
+
+.flip-card {
+    width: 100%;
+    height: 350px;
     perspective: 1000px;
-    margin-bottom: 20px;
 }
 
 .flip-card-inner {
@@ -15,21 +25,37 @@
     transform-style: preserve-3d;
 }
 
-.flipped {
-    transform: rotateY(180deg);
-}
+.flipped { transform: rotateY(180deg); }
 
 .flip-card-front, .flip-card-back {
     position: absolute;
     width: 100%;
     height: 100%;
-    -webkit-backface-visibility: hidden;
     backface-visibility: hidden;
-    border-radius: 8px;
-    overflow-y: auto; /* Allow internal scrolling for long news content */
+    top: 0;
+    left: 0;
+    box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2);
+    border-radius: 4px;
 }
 
-.flip-card-back {
-    transform: rotateY(180deg);
-    background-color: #f3f3f3;
+.flip-card-back { transform: rotateY(180deg); }
+
+lightning-card {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.content-area {
+    flex-grow: 1;
+    height: 240px; 
+    overflow-y: auto;
+    text-align: left;
+}
+
+.footer-text {
+    text-align: center;
+    color: #747474;
+    font-size: 0.75rem;
+    padding: 5px;
 }

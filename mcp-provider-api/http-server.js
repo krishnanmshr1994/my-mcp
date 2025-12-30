@@ -534,14 +534,9 @@ Otherwise, respond ONLY with the valid SOQL query (no markdown, no explanations,
 // Logic for summary
 app.post('/summarize', async (req, res) => {
     try {
-        console.log('🔍 POST /summarize called');
-        if (!NVIDIA_API_KEY) {
-            return res.status(503).json({ error: 'LLM not configured' });
-        }
-
         const { textData } = req.body;
-
-        const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+        
+        const response = await fetch(NVIDIA_URL, {
             method: "POST",
             headers: {
                 "Authorization": `Bearer ${NVIDIA_API_KEY}`,
@@ -552,25 +547,13 @@ app.post('/summarize', async (req, res) => {
                 messages: [
                     {
                         role: "system",
-                        content: `You are a business analyst. Analyze the provided news and return a JSON object.
-                        
-                        STRICT JSON STRUCTURE:
-                        {
-                            "summary": "HTML string containing only <ul> and <li> tags with 3-5 bullet points",
-                            "sentiment": "Positive", "Negative", or "Neutral"
-                        }
-                        
-                        RULES:
-                        1. Do NOT include introductory text (e.g., "Here is the summary").
-                        2. Use valid HTML tags for the summary.
-                        3. Focus on financial and strategic updates.`
+                        content: "You are a business analyst. Return ONLY a JSON object with 'summary' (HTML <ul><li> format) and 'sentiment' ('Positive', 'Negative', 'Neutral'). No other text."
                     },
                     {
                         role: "user",
-                        content: `Analyze and summarize this news text:\n\n${textData}`
+                        content: `Analyze this news:\n\n${textData}`
                     }
                 ],
-                // This flag ensures the model outputs valid JSON
                 response_format: { type: "json_object" },
                 temperature: 0.2
             })
@@ -578,24 +561,27 @@ app.post('/summarize', async (req, res) => {
 
         const data = await response.json();
         
-        if (data.error) {
-            console.error('NVIDIA API Error:', data.error);
-            return res.status(500).json({ error: data.error });
+        // Safety check for NVIDIA API structure
+        if (data.choices && data.choices[0].message.content) {
+            const rawContent = data.choices[0].message.content;
+            
+            // Try parsing the content string into a JSON object
+            try {
+                const cleanJson = JSON.parse(rawContent);
+                res.json(cleanJson);
+            } catch (parseErr) {
+                console.error("LLM didn't return valid JSON string:", rawContent);
+                res.status(500).json({ error: "Invalid JSON structure from AI" });
+            }
+        } else {
+            res.status(500).json({ error: "No content from AI" });
         }
 
-        // The LLM returns the JSON as a string inside the 'content' field
-        const resultString = data.choices[0].message.content;
-        const resultJSON = JSON.parse(resultString);
-
-        // Send the parsed JSON back to your LWC
-        res.json(resultJSON);
-
     } catch (error) {
-        console.error('Summarize Error:', error.message);
+        console.error("Server Error:", error);
         res.status(500).json({ error: error.message });
     }
 });
-
 app.post('/smart-query', async (req, res) => {
   console.log('🔍 POST /smart-query called');
   try {
