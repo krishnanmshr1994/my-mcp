@@ -639,9 +639,43 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
     }
   }
 
+  // Detect if question is referencing previous results
+  const isReferencingPrevious = /\b(above|those|these|the previous|that|them|it|related|from|of)\b/i.test(question);
+  
+  // Extract potential object names from the current question
+  const allObjects = [...schema.standard, ...schema.custom];
+  const questionLower = question.toLowerCase();
+  const mentionedObjects = allObjects.filter(obj => 
+    questionLower.includes(obj.apiName.toLowerCase()) ||
+    questionLower.includes(obj.label.toLowerCase())
+  );
+  
+  // Get the object from the last query in history
+  let previousObject = null;
+  if (conversationHistory.length > 0) {
+    const lastQuery = conversationHistory[conversationHistory.length - 1];
+    // Extract object name from SOQL (pattern: FROM ObjectName)
+    const fromMatch = lastQuery.soql.match(/FROM\s+(\w+)/i);
+    if (fromMatch) {
+      previousObject = fromMatch[1];
+    }
+  }
+  
+  // Determine if this is a new query or related to previous
+  let isNewQuery = false;
+  if (mentionedObjects.length > 0 && previousObject) {
+    // If user mentions a different object than the previous query, it's a new query
+    // UNLESS they use "related" keywords
+    const isDifferentObject = !mentionedObjects.some(obj => 
+      obj.apiName.toLowerCase() === previousObject.toLowerCase()
+    );
+    const hasRelatedKeywords = /\b(related|from|of|for)\b/i.test(question);
+    isNewQuery = isDifferentObject && !hasRelatedKeywords;
+  }
+  
   // Build conversation context for the LLM
   let conversationContext = '';
-  if (conversationHistory.length > 0) {
+  if (conversationHistory.length > 0 && isReferencingPrevious && !isNewQuery) {
     conversationContext = '\n\nPREVIOUS CONVERSATION CONTEXT:\n';
     conversationHistory.forEach((msg, idx) => {
       conversationContext += `${idx + 1}. User: ${msg.question}\n`;
@@ -651,7 +685,16 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
       }
       conversationContext += '\n';
     });
-    conversationContext += 'IMPORTANT: If the user references "above", "those", "these", "the previous", etc., they are referring to the LAST query in the context above. Use the SAME WHERE clause and conditions from that query.\n\n';
+    conversationContext += `IMPORTANT: The user is referring to the LAST query above (Object: ${previousObject}).\n`;
+    conversationContext += 'Use the SAME WHERE clause and conditions from that query when appropriate.\n';
+    conversationContext += 'If the user asks about RELATED objects (e.g., "related accounts", "contacts from those opportunities"):\n';
+    conversationContext += '  - Use relationship queries or lookup fields to connect to the previous results\n';
+    conversationContext += '  - Example: If previous was Opportunity, and user asks "related accounts", use: SELECT Id, Name, AccountId FROM Opportunity WHERE Amount > 0 to get Account IDs\n';
+    conversationContext += '  - Or use: SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE Amount > 0)\n';
+    conversationContext += 'For aggregations on previous results (AVG, SUM, COUNT, MAX, MIN), use the same WHERE clause.\n\n';
+  } else if (conversationHistory.length > 0 && isNewQuery) {
+    // User is asking about a different object - this is a new query
+    conversationContext = '\n\nNOTE: This appears to be a NEW question about a different object than the previous query. Generate a fresh SOQL query.\n\n';
   }
 
   const prompt = `You are a Salesforce SOQL expert. Generate valid SOQL queries following these STRICT RULES:
@@ -663,15 +706,19 @@ CRITICAL SOQL RULES:
 4. Custom fields end with __c (e.g., Custom_Field__c)
 5. Use EXACT API names from the schema provided
 6. For "top N" queries with amounts/numbers:
-   - ALWAYS add WHERE clause to exclude null/zero values: WHERE Amount > 0 OR WHERE Amount != null
+   - ALWAYS add WHERE clause to exclude null/zero values: WHERE Amount > 0
    - ALWAYS add ORDER BY clause: ORDER BY Amount DESC
    - Use LIMIT for "top N": LIMIT 5
-   - Example: SELECT Id, Name, Amount FROM Opportunity WHERE Amount > 0 ORDER BY Amount DESC LIMIT 5
-7. CONTEXT AWARENESS - If user says "above", "those", "these records", "the previous":
-   - Use the SAME object and WHERE conditions from the most recent query in conversation history
-   - For aggregations (AVG, SUM, COUNT, MAX, MIN), add the aggregate function but keep the WHERE clause
-   - Example: If previous was "SELECT Id, Name, Amount FROM Opportunity WHERE Amount > 0 ORDER BY Amount DESC LIMIT 5"
-     And user asks "average amount of the above", generate: "SELECT AVG(Amount) FROM Opportunity WHERE Amount > 0"
+7. CONTEXT AWARENESS:
+   - If user references previous results with "above", "those", "these", use the same WHERE conditions
+   - If user asks about RELATED objects (e.g., "related accounts", "contacts from those opportunities"):
+     * Use subqueries: SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE [previous conditions])
+     * Or use relationship fields from the previous object
+   - If user asks about a DIFFERENT unrelated object, treat it as a NEW query
+8. RELATIONSHIP QUERIES:
+   - Opportunities have AccountId (lookup to Account)
+   - Contacts have AccountId (lookup to Account)
+   - Use subqueries for related records across objects
 
 ${schemaText}${objectFieldsList}${conversationContext}
 
