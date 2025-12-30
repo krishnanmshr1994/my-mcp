@@ -534,9 +534,12 @@ Otherwise, respond ONLY with the valid SOQL query (no markdown, no explanations,
 // Logic for summary
 app.post('/summarize', async (req, res) => {
     try {
+        if (!NVIDIA_API_KEY) {
+            return res.status(503).json({ error: 'LLM not configured' });
+        }
         const { textData } = req.body;
         
-        const response = await fetch(NVIDIA_URL, {
+        const response = await fetch(NVIDIA_API_BASE, {
             method: "POST",
             headers: {
                 "Authorization": `Bearer ${NVIDIA_API_KEY}`,
@@ -568,6 +571,7 @@ app.post('/summarize', async (req, res) => {
             // Try parsing the content string into a JSON object
             try {
                 const cleanJson = JSON.parse(rawContent);
+                console.log(`clean json news: $(cleanJson)`);
                 res.json(cleanJson);
             } catch (parseErr) {
                 console.error("LLM didn't return valid JSON string:", rawContent);
