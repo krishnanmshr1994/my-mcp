@@ -531,6 +531,33 @@ Otherwise, respond ONLY with the valid SOQL query (no markdown, no explanations,
   }
 });
 
+// Add this to your existing http-server.js
+app.post('/summarize', async (req, res) => {
+    try {
+        const { textData } = req.body;
+        
+        const response = await fetch(`${process.env.NVIDIA_API_BASE}/chat/completions`, {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${process.env.NVIDIA_API_KEY}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                model: process.env.NVIDIA_MODEL || 'meta/llama-3.3-70b-instruct',
+                messages: [
+                    { role: "system", content: "Summarize the following news concisely for a business user." },
+                    { role: "user", content: textData }
+                ]
+            })
+        });
+
+        const data = await response.json();
+        res.json(data);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.post('/smart-query', async (req, res) => {
   console.log('🔍 POST /smart-query called');
   try {
