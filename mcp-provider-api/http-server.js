@@ -534,55 +534,39 @@ Otherwise, respond ONLY with the valid SOQL query (no markdown, no explanations,
 // Logic for summary
 app.post('/summarize', async (req, res) => {
     try {
-        if (!NVIDIA_API_KEY) {
-            return res.status(503).json({ error: 'LLM not configured' });
-        }
-        const { textData } = req.body;
-        
-        const response = await fetch(NVIDIA_API_BASE, {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${NVIDIA_API_KEY}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                model: NVIDIA_MODEL,
-                messages: [
-                    {
-                        role: "system",
-                        content: "You are a business analyst. Return ONLY a JSON object with 'summary' (HTML <ul><li> format) and 'sentiment' ('Positive', 'Negative', 'Neutral'). No other text."
-                    },
-                    {
-                        role: "user",
-                        content: `Analyze this news:\n\n${textData}`
-                    }
-                ],
-                response_format: { type: "json_object" },
-                temperature: 0.2
-            })
-        });
+          if (!NVIDIA_API_KEY) {
+                return res.status(503).json({ error: 'LLM not configured' });
+          }
+          const { textData } = req.body;
+          const response = await fetch(NVIDIA_API_BASE, {
+              method: "POST",
+              headers: {
+                  "Authorization": `Bearer ${NVIDIA_API_KEY}`,
+                  "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                  model: "meta/llama-3.1-70b-instruct",
+                  messages: [
+                      {
+                          role: "system",
+                          content: "Return ONLY a raw JSON object. No preamble. No markdown blocks. Structure: {\"summary\": \"<ul><li>point</li></ul>\", \"sentiment\": \"Positive\"}"
+                      },
+                      { role: "user", content: `Summarize: ${textData}` }
+                  ],
+                  response_format: { type: "json_object" },
+                  temperature: 0.1
+              })
+          });
 
-        const data = await response.json();
-        
-        // Safety check for NVIDIA API structure
-        if (data.choices && data.choices[0].message.content) {
-            const rawContent = data.choices[0].message.content;
-            
-            // Try parsing the content string into a JSON object
-            try {
-                const cleanJson = JSON.parse(rawContent);
-                console.log(`clean json news: $(cleanJson)`);
-                res.json(cleanJson);
-            } catch (parseErr) {
-                console.error("LLM didn't return valid JSON string:", rawContent);
-                res.status(500).json({ error: "Invalid JSON structure from AI" });
-            }
-        } else {
-            res.status(500).json({ error: "No content from AI" });
-        }
-
+          const data = await response.json();
+          let content = data.choices[0].message.content.trim();
+          console.log(`Raw Summary Response: ${content}`);
+          // FIX: Remove any markdown backticks if present
+          content = content.replace(/```json|```/g, "").trim();
+          console.log(`Summary Response: ${content}`);
+          // Send as a pure object to the LWC
+          res.json(JSON.parse(content)); 
     } catch (error) {
-        console.error("Server Error:", error);
         res.status(500).json({ error: error.message });
     }
 });
