@@ -8,7 +8,7 @@ export default class News extends LightningElement {
     renderNews = false;
 
     // Point this to your Render/Node.js server URL
-    PROXY_URL = 'https://my-mcp-6ihw.onrender.com/summarize-news';
+    PROXY_URL = 'https://my-mcp-6ihw.onrender.com/summarize';
 
     connectedCallback() {
         if (this.accountName) {
