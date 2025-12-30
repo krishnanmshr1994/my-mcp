@@ -1,8 +1,9 @@
-Following will the the ultimate goal of this project:
+The following will be the ultimate goal of this project:
 
 # Add a chatbot to query Salesforce data
-# Add an agent to fetch latest news
-# Add an agent to get latest share price of a public company
+# Add an agent to fetch the latest news
+# Add an agent to get the latest share price of a public company
 # Add an agent to get general query information
-# Add voice enabled questions 
+# Add voice-enabled questions 
 # Integrate the chat with WhatsApp/Telegram
+# Add email writing assistance
