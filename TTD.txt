@@ -7,3 +7,5 @@ The following will be the ultimate goal of this project:
 # Add voice-enabled questions 
 # Integrate the chat with WhatsApp/Telegram
 # Add email writing assistance
+# Summarization and sentiment analysis
+# Stock analysis
