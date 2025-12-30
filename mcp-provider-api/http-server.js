@@ -20,8 +20,9 @@ const SF_INSTANCE_URL = process.env.SALESFORCE_INSTANCE_URL;
 // Cache
 let schemaCache = null;
 let schemaCacheTime = null;
-const SCHEMA_CACHE_TTL = 3600000; // 1 hour
+const SCHEMA_CACHE_TTL = 3600000;
 const objectFieldsCache = new Map();
+let currentUserId = null;
 
 // Salesforce connection
 let sfConnection = null;
@@ -36,7 +37,6 @@ app.use(express.json({ limit: '10mb' }));
 async function getConnection() {
   console.log('🔍 Getting Salesforce connection...');
   
-  // Test existing connection
   if (sfConnection && sfConnection.accessToken) {
     try {
       await sfConnection.query('SELECT Id FROM User LIMIT 1');
@@ -45,13 +45,12 @@ async function getConnection() {
     } catch (err) {
       console.log('⚠️  Connection expired, reconnecting...');
       sfConnection = null;
+      currentUserId = null;
     }
   }
 
-  // Method 1: Access Token (if provided)
   if (SF_ACCESS_TOKEN && SF_INSTANCE_URL) {
     console.log('🔐 Authenticating with access token...');
-    console.log(`   Instance: ${SF_INSTANCE_URL}`);
     
     sfConnection = new jsforce.Connection({
       instanceUrl: SF_INSTANCE_URL.replace(/\/$/, ''),
@@ -60,7 +59,10 @@ async function getConnection() {
 
     try {
       await sfConnection.query('SELECT Id FROM User LIMIT 1');
+      const identity = await sfConnection.identity();
+      currentUserId = identity.user_id;
       console.log('✅ Token authentication successful');
+      console.log(`   User ID: ${currentUserId}`);
       return sfConnection;
     } catch (error) {
       console.error('❌ Token authentication failed:', error.message);
@@ -69,26 +71,22 @@ async function getConnection() {
     }
   }
 
-  // Method 2: Username/Password
   if (!SF_USERNAME || !SF_PASSWORD) {
-    throw new Error('Salesforce credentials not configured. Set SALESFORCE_USERNAME and SALESFORCE_PASSWORD or SALESFORCE_ACCESS_TOKEN and SALESFORCE_INSTANCE_URL');
+    throw new Error('Salesforce credentials not configured');
   }
 
   console.log('🔐 Authenticating with username/password...');
-  console.log(`   URL: ${SF_LOGIN_URL}`);
-  console.log(`   Username: ${SF_USERNAME}`);
-  
   sfConnection = new jsforce.Connection({ loginUrl: SF_LOGIN_URL });
 
   try {
     const password = SF_PASSWORD + SF_SECURITY_TOKEN;
     const userInfo = await sfConnection.login(SF_USERNAME, password);
+    currentUserId = userInfo.id;
     console.log('✅ Username/password authentication successful');
-    console.log(`   Org ID: ${userInfo.organizationId}`);
-    console.log(`   User ID: ${userInfo.id}`);
+    console.log(`   User ID: ${currentUserId}`);
     return sfConnection;
   } catch (error) {
-    console.error('❌ Username/password authentication failed:', error.message);
+    console.error('❌ Authentication failed:', error.message);
     sfConnection = null;
     throw new Error(`Login failed: ${error.message}`);
   }
@@ -113,45 +111,21 @@ async function query(soql) {
 }
 
 async function createRecord(objectType, data) {
-  console.log(`➕ Creating ${objectType} record`);
   const conn = await getConnection();
-  
-  try {
-    const result = await conn.sobject(objectType).create(data);
-    console.log(`✅ Created: ${result.id}`);
-    return result;
-  } catch (error) {
-    console.error(`❌ Create failed: ${error.message}`);
-    throw error;
-  }
+  const result = await conn.sobject(objectType).create(data);
+  return result;
 }
 
 async function updateRecord(objectType, id, data) {
-  console.log(`✏️  Updating ${objectType}: ${id}`);
   const conn = await getConnection();
-  
-  try {
-    const result = await conn.sobject(objectType).update({ Id: id, ...data });
-    console.log(`✅ Updated: ${id}`);
-    return result;
-  } catch (error) {
-    console.error(`❌ Update failed: ${error.message}`);
-    throw error;
-  }
+  const result = await conn.sobject(objectType).update({ Id: id, ...data });
+  return result;
 }
 
 async function deleteRecord(objectType, id) {
-  console.log(`🗑️  Deleting ${objectType}: ${id}`);
   const conn = await getConnection();
-  
-  try {
-    const result = await conn.sobject(objectType).destroy(id);
-    console.log(`✅ Deleted: ${id}`);
-    return result;
-  } catch (error) {
-    console.error(`❌ Delete failed: ${error.message}`);
-    throw error;
-  }
+  const result = await conn.sobject(objectType).destroy(id);
+  return result;
 }
 
 // ============================================
@@ -159,17 +133,10 @@ async function deleteRecord(objectType, id) {
 // ============================================
 
 async function getOrgSchema() {
-  console.log('🔍 Getting org schema...');
-  
-  // Check cache
   if (schemaCache && schemaCacheTime && (Date.now() - schemaCacheTime < SCHEMA_CACHE_TTL)) {
-    const age = Math.floor((Date.now() - schemaCacheTime) / 1000);
-    console.log(`✅ Returning cached schema (age: ${age}s)`);
     return schemaCache;
   }
 
-  console.log('📥 Fetching fresh schema from Salesforce...');
-  
   const soql = 'SELECT QualifiedApiName, Label FROM EntityDefinition WHERE IsCustomizable = true ORDER BY QualifiedApiName LIMIT 50000';
   const result = await query(soql);
   
@@ -190,22 +157,15 @@ async function getOrgSchema() {
 
   schemaCache = objects;
   schemaCacheTime = Date.now();
-  
-  console.log(`✅ Schema cached: ${objects.standard.length} standard, ${objects.custom.length} custom objects`);
   return objects;
 }
 
 async function getObjectSchema(objectName) {
-  console.log(`🔍 Getting schema for ${objectName}...`);
-  
   const cached = objectFieldsCache.get(objectName);
   if (cached && (Date.now() - cached.timestamp < SCHEMA_CACHE_TTL)) {
-    console.log(`✅ Returning cached fields for ${objectName}`);
     return cached.data;
   }
 
-  console.log(`📥 Fetching fields for ${objectName}...`);
-  
   const soql = `SELECT QualifiedApiName, Label, DataType FROM FieldDefinition WHERE EntityDefinition.QualifiedApiName = '${objectName}' ORDER BY QualifiedApiName LIMIT 200`;
   const result = await query(soql);
   
@@ -219,7 +179,6 @@ async function getObjectSchema(objectName) {
     timestamp: Date.now()
   });
   
-  console.log(`✅ Cached ${schema.fields.length} fields for ${objectName}`);
   return schema;
 }
 
@@ -236,479 +195,157 @@ function formatSchema(schema) {
 }
 
 // ============================================
-// API ENDPOINTS
+// IMPROVED SOQL GENERATION
 // ============================================
 
-app.get('/health', async (req, res) => {
-  console.log('🔍 Health check called');
+function buildSOQLPrompt(question, schemaText, objectFieldsList, conversationContext, detectedObject, isFieldsQuery) {
+  const userId = currentUserId || 'UNKNOWN_USER';
+  const today = new Date().toISOString().split('T')[0];
+
+  // Extract Salesforce IDs from question
+  const idPattern = /\b([a-zA-Z0-9]{15}|[a-zA-Z0-9]{18})\b/g;
+  const extractedIds = question.match(idPattern) || [];
   
-  let sfStatus = 'not connected';
-  try {
-    if (sfConnection && sfConnection.accessToken) {
-      await sfConnection.identity();
-      sfStatus = 'connected';
-    }
-  } catch (err) {
-    sfStatus = 'connection error';
+  let idContext = '';
+  if (extractedIds.length > 0) {
+    idContext = `\n=== SALESFORCE IDs DETECTED ===\n`;
+    extractedIds.forEach(id => idContext += `- ${id}\n`);
+    idContext += `⚠️ Use these EXACT IDs. NO placeholders like 'your_id' or 'your_task_id'.\n\n`;
   }
-  
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    salesforce: {
-      status: sfStatus,
-      configured: !!(SF_USERNAME && SF_PASSWORD) || !!(SF_ACCESS_TOKEN && SF_INSTANCE_URL),
-      username: SF_USERNAME || 'Token-based',
-      hasAccessToken: !!SF_ACCESS_TOKEN
-    },
-    llm: {
-      configured: !!NVIDIA_API_KEY,
-      model: NVIDIA_MODEL
-    },
-    cache: {
-      loaded: !!schemaCache,
-      ageSeconds: schemaCache ? Math.floor((Date.now() - schemaCacheTime) / 1000) : null,
-      objectCount: schemaCache ? (schemaCache.standard.length + schemaCache.custom.length) : 0,
-      objectFieldsCached: objectFieldsCache.size
-    }
-  });
-});
 
-app.get('/schema', async (req, res) => {
-  console.log('🔍 GET /schema called');
-  try {
-    const schema = await getOrgSchema();
-    res.json(schema);
-  } catch (error) {
-    console.error('❌ GET /schema error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+  return `You are a Salesforce SOQL expert. Generate VALID, EXECUTABLE SOQL queries.
 
-app.get('/schema/:objectName', async (req, res) => {
-  console.log(`🔍 GET /schema/${req.params.objectName} called`);
-  try {
-    const schema = await getObjectSchema(req.params.objectName);
-    res.json(schema);
-  } catch (error) {
-    console.error(`❌ GET /schema/:object error:`, error);
-    res.status(500).json({ error: error.message });
-  }
-});
+=== CRITICAL RULES ===
 
-app.post('/query', async (req, res) => {
-  console.log('🔍 POST /query called');
-  try {
-    const { soql } = req.body;
-    if (!soql) {
-      return res.status(400).json({ error: 'soql is required' });
-    }
-    const result = await query(soql);
-    res.json(result);
-  } catch (error) {
-    console.error('❌ POST /query error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+1. FIELD SELECTION:
+   ❌ NEVER: SELECT *
+   ✅ ALWAYS: SELECT Id, Name, Field1__c FROM Object
 
-app.post('/create', async (req, res) => {
-  console.log('🔍 POST /create called');
-  try {
-    const { objectType, data } = req.body;
-    if (!objectType || !data) {
-      return res.status(400).json({ error: 'objectType and data are required' });
-    }
-    const result = await createRecord(objectType, data);
-    res.json(result);
-  } catch (error) {
-    console.error('❌ POST /create error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+2. SALESFORCE IDs:
+   ✅ Use EXACT 15/18 character IDs: WHERE Id = '00TGA00003fTAL32AO'
+   ❌ NO placeholders: 'your_id', 'your_task_id', 'replace_with_id', 'xxx'
 
-app.post('/update', async (req, res) => {
-  console.log('🔍 POST /update called');
-  try {
-    const { objectType, id, data } = req.body;
-    if (!objectType || !id || !data) {
-      return res.status(400).json({ error: 'objectType, id, and data are required' });
-    }
-    const result = await updateRecord(objectType, id, data);
-    res.json(result);
-  } catch (error) {
-    console.error('❌ POST /update error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+3. ADDRESS FIELDS:
+   ❌ NEVER: SELECT Address FROM Account
+   ✅ ALWAYS use components:
+      - Billing: BillingStreet, BillingCity, BillingState, BillingPostalCode, BillingCountry
+      - Shipping: ShippingStreet, ShippingCity, ShippingState, ShippingPostalCode, ShippingCountry
+      - Mailing: MailingStreet, MailingCity, MailingState, MailingPostalCode, MailingCountry
+      - Other: OtherStreet, OtherCity, OtherState, OtherPostalCode, OtherCountry
 
-app.post('/delete', async (req, res) => {
-  console.log('🔍 POST /delete called');
-  try {
-    const { objectType, id } = req.body;
-    if (!objectType || !id) {
-      return res.status(400).json({ error: 'objectType and id are required' });
-    }
-    const result = await deleteRecord(objectType, id);
-    res.json(result);
-  } catch (error) {
-    console.error('❌ POST /delete error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+4. POLYMORPHIC FIELDS (Task/Event):
+   - WhoId → Contact or Lead (people)
+   - WhatId → Account, Opportunity, Case (things)
+   - ✅ Query both: SELECT WhoId, Who.Name, WhatId, What.Name FROM Task
+   - ✅ Use Who.Type and What.Type to identify object type
+   - For "client" questions: include BOTH Who and What (client could be either)
+   
+   Polymorphic Examples:
+   - "task for account 001xxx": SELECT Id, Subject, WhatId, What.Name FROM Task WHERE WhatId = '001xxx'
+   - "task for contact 003xxx": SELECT Id, Subject, WhoId, Who.Name FROM Task WHERE WhoId = '003xxx'
+   - "client for task 00Txxx": SELECT Id, WhoId, Who.Name, Who.Type, WhatId, What.Name, What.Type FROM Task WHERE Id = '00Txxx'
 
-app.post('/describe-object', async (req, res) => {
-  console.log('🔍 POST /describe-object called');
-  try {
-    const { objectName } = req.body;
-    if (!objectName) {
-      return res.status(400).json({ error: 'objectName is required' });
-    }
+5. USER CONTEXT:
+   - Current User ID: '${userId}'
+   - Today: ${today}
+   - "My tasks": WHERE OwnerId = '${userId}'
+   - "My opportunities": WHERE OwnerId = '${userId}'
+   - ❌ NO bind variables (:userId)
 
-    console.log(`📋 Describing object: ${objectName}`);
-    
-    const objSchema = await getObjectSchema(objectName);
-    const fieldNames = objSchema.fields.map(f => f.QualifiedApiName);
-    const soql = `SELECT ${fieldNames.join(', ')} FROM ${objectName} LIMIT 10`;
-    
-    let sampleData = null;
-    try {
-      sampleData = await query(soql);
-    } catch (err) {
-      console.log('⚠️  Could not fetch sample data:', err.message);
-    }
-    
-    res.json({
-      objectName,
-      fieldCount: objSchema.fields.length,
-      fields: objSchema.fields,
-      generatedSOQL: soql,
-      sampleData: sampleData ? {
-        totalSize: sampleData.totalSize,
-        records: sampleData.records
-      } : null
-    });
+6. TOP N / SORTING:
+   - "Top 5": WHERE Amount > 0 ORDER BY Amount DESC LIMIT 5
+   - "Random 5": ORDER BY RANDOM() LIMIT 5 (NOT SUPPORTED - use just LIMIT 5)
+   - "Latest 10": ORDER BY CreatedDate DESC LIMIT 10
 
-  } catch (error) {
-    console.error('❌ POST /describe-object error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+7. DATE LITERALS:
+   Day-based: TODAY, YESTERDAY, TOMORROW
+   Week-based: THIS_WEEK, LAST_WEEK, NEXT_WEEK
+   Month-based: THIS_MONTH, LAST_MONTH, NEXT_MONTH
+   Quarter-based: THIS_QUARTER, LAST_QUARTER, NEXT_QUARTER
+   Year-based: THIS_YEAR, LAST_YEAR, NEXT_YEAR
+   
+   Range literals:
+   - LAST_N_DAYS:n (e.g., LAST_N_DAYS:30)
+   - NEXT_N_DAYS:n (e.g., NEXT_N_DAYS:7)
+   - LAST_N_WEEKS:n, NEXT_N_WEEKS:n
+   - LAST_N_MONTHS:n, NEXT_N_MONTHS:n
+   - LAST_N_QUARTERS:n, NEXT_N_QUARTERS:n
+   - LAST_N_YEARS:n, NEXT_N_YEARS:n
+   
+   Date formats:
+   - Date: YYYY-MM-DD (e.g., 2024-12-30)
+   - DateTime: YYYY-MM-DDTHH:MM:SSZ (e.g., 2024-12-30T15:30:00Z)
+   
+   Examples:
+   - WHERE CreatedDate = TODAY
+   - WHERE CreatedDate > LAST_N_DAYS:30
+   - WHERE CloseDate >= THIS_MONTH
+   - WHERE LastModifiedDate = YESTERDAY
 
-app.post('/generate-soql', async (req, res) => {
-  console.log('🔍 POST /generate-soql called');
-  try {
-    if (!NVIDIA_API_KEY) {
-      return res.status(503).json({ error: 'LLM not configured. Set NVIDIA_API_KEY' });
-    }
+8. RELATIONSHIPS:
+   - Child-to-Parent: Account.Name, Contact.Account.Name, Opportunity.Account.Owner.Name
+   - Parent-to-Child: (SELECT Id, Name FROM Contacts), (SELECT Id, Name FROM Opportunities)
+   - Custom: Custom__r.Name, Custom__r.Field__c
 
-    const { question, objectHint } = req.body;
-    if (!question) {
-      return res.status(400).json({ error: 'question is required' });
-    }
+${idContext}
 
-    // Detect object from question
-    const fieldQueryMatch = question.toLowerCase().match(/fields?.*(?:of|for|in)\s+(\w+)/);
-    let detectedObject = objectHint;
-    
-    if (fieldQueryMatch) {
-      detectedObject = fieldQueryMatch[1].replace(/barcode[_\s]config/i, 'Barcode_Config__c');
-    }
+=== EXAMPLES ===
 
-    const customObjMatch = question.match(/(\w+__c)/i);
-    if (customObjMatch) {
-      detectedObject = customObjMatch[1];
-    }
+"task 00TGA00003fTAL32AO"
+→ SELECT Id, Subject, Status, WhoId, Who.Name, WhatId, What.Name FROM Task WHERE Id = '00TGA00003fTAL32AO'
 
-    const schema = await getOrgSchema();
-    const schemaText = formatSchema(schema);
+"client for task 00TGA00003fTAL32AO"
+→ SELECT Id, WhoId, Who.Name, Who.Type, WhatId, What.Name, What.Type FROM Task WHERE Id = '00TGA00003fTAL32AO'
 
-    let objectFieldsList = '';
-    let isFieldsQuery = false;
-    
-    if (detectedObject || fieldQueryMatch) {
-      try {
-        const targetObject = detectedObject || fieldQueryMatch[1];
-        console.log(`🔍 Detected request for fields of: ${targetObject}`);
-        
-        const allObjects = [...schema.standard, ...schema.custom];
-        const matchedObject = allObjects.find(obj => 
-          obj.apiName.toLowerCase().includes(targetObject.toLowerCase()) ||
-          obj.label.toLowerCase().includes(targetObject.toLowerCase())
-        );
+"my open tasks"
+→ SELECT Id, Subject, Status, ActivityDate, WhoId, Who.Name, WhatId, What.Name FROM Task WHERE OwnerId = '${userId}' AND IsClosed = false
 
-        if (matchedObject) {
-          console.log(`✅ Found object: ${matchedObject.apiName}`);
-          const objSchema = await getObjectSchema(matchedObject.apiName);
-          objectFieldsList = `\n\nAvailable fields for ${matchedObject.apiName}:\n${objSchema.fields.map(f => `- ${f.QualifiedApiName} (${f.DataType}) - ${f.Label}`).join('\n')}`;
-          isFieldsQuery = true;
-          detectedObject = matchedObject.apiName;
-        }
-      } catch (err) {
-        console.error('Failed to get object fields:', err);
-      }
-    }
+"top 5 opportunities"
+→ SELECT Id, Name, Amount, StageName FROM Opportunity WHERE Amount > 0 ORDER BY Amount DESC LIMIT 5
 
-    const prompt = `You are a Salesforce SOQL expert. Generate valid SOQL queries following these STRICT RULES:
+"contacts in California"
+→ SELECT Id, Name, Email, MailingCity, MailingState FROM Contact WHERE MailingState = 'CA'
 
-CRITICAL SOQL RULES:
-1. NEVER use "SELECT *" - SOQL does NOT support this syntax
-2. ALWAYS explicitly list field names: SELECT Id, Name, Field1__c FROM Object
-3. Custom objects end with __c (e.g., Barcode_Config__c)
-4. Custom fields end with __c (e.g., Custom_Field__c)
-5. Use EXACT API names from the schema provided
-6. For "top N" queries with amounts/numbers:
-   - ALWAYS add WHERE clause to exclude null/zero values: WHERE Amount > 0 OR WHERE Amount != null
-   - ALWAYS add ORDER BY clause: ORDER BY Amount DESC
-   - Use LIMIT for "top N": LIMIT 5
-   - Example: SELECT Id, Name, Amount FROM Opportunity WHERE Amount > 0 ORDER BY Amount DESC LIMIT 5
+"accounts with billing address in NY"
+→ SELECT Id, Name, BillingStreet, BillingCity, BillingState FROM Account WHERE BillingState = 'NY'
 
-${schemaText}${objectFieldsList}
+"opportunities closed this month"
+→ SELECT Id, Name, Amount, CloseDate FROM Opportunity WHERE CloseDate = THIS_MONTH
 
-Question: ${question}
+"tasks created in last 7 days"
+→ SELECT Id, Subject, CreatedDate FROM Task WHERE CreatedDate > LAST_N_DAYS:7
 
-${isFieldsQuery ? `
-This is a request to see ALL fields of an object.
-Generate a SELECT query that includes ALL the fields listed above.
-Example format: SELECT Id, Field1__c, Field2__c, Field3__c FROM ${detectedObject}
-` : ''}
+"leads updated yesterday"
+→ SELECT Id, Name, Email, LastModifiedDate FROM Lead WHERE LastModifiedDate = YESTERDAY
 
-If you need clarification about which object to use, respond: CLARIFICATION_NEEDED: [your question]
+"give me 5 contacts"
+→ SELECT Id, Name, Email, Phone FROM Contact LIMIT 5
 
-Otherwise, respond ONLY with the valid SOQL query (no markdown, no explanations, no SELECT *).`;
+"accounts with opportunities"
+→ SELECT Id, Name, (SELECT Id, Name, Amount FROM Opportunities) FROM Account
 
-    const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${NVIDIA_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: NVIDIA_MODEL,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.2,
-        max_tokens: 1024
-      })
-    });
+=== SCHEMA ===
+${schemaText}
+${objectFieldsList}
+${conversationContext}
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('NVIDIA API error response:', errorText);
-      throw new Error(`NVIDIA API error: ${response.status} - ${errorText}`);
-    }
+=== QUESTION ===
+${question}
 
-    const data = await response.json();
-    let result = data.choices[0].message.content.trim();
-    
-    if (result.startsWith('CLARIFICATION_NEEDED:')) {
-      return res.json({
-        needsClarification: true,
-        question: result.replace('CLARIFICATION_NEEDED:', '').trim(),
-        originalQuestion: question
-      });
-    }
+${isFieldsQuery ? `LIST ALL FIELDS from ${detectedObject}` : ''}
 
-    // Clean up the response
-    result = result.replace(/```sql\n?/g, '').replace(/```\n?/g, '').trim();
-    
-    // Validate - reject if contains SELECT *
-    if (result.includes('SELECT *')) {
-      console.error('⚠️  LLM generated invalid SELECT * query, regenerating...');
-      result = result.replace(/SELECT \*/gi, `SELECT Id, Name`);
-    }
+Respond with ONLY the SOQL query. No markdown, no explanation.
+If unclear: CLARIFICATION_NEEDED: [question]`;
+}
 
-    console.log(`✅ Generated SOQL: ${result}`);
-    
-    res.json({
-      soql: result,
-      originalQuestion: question,
-      needsClarification: false,
-      detectedObject: detectedObject || null
-    });
+async function generateSOQLWithContext(question, objectHint, conversationHistory) {
+  await getConnection();
 
-  } catch (error) {
-    console.error('❌ POST /generate-soql error:', error);
-    res.status(500).json({ error: error.message, stack: error.stack });
-  }
-});
-
-app.post('/smart-query', async (req, res) => {
-  console.log('🔍 POST /smart-query called');
-  try {
-    if (!NVIDIA_API_KEY) {
-      return res.status(503).json({ error: 'LLM not configured' });
-    }
-
-    const { question, objectHint, conversationHistory = [] } = req.body;
-    if (!question) {
-      return res.status(400).json({ error: 'question is required' });
-    }
-
-    // Check if this is an aggregation/calculation on previous results
-    const isAggregationOnPrevious = /\b(average|avg|sum|total|count|max|min|calculate|compute)\b/i.test(question) &&
-                                     /\b(above|those|these|the previous|that|them)\b/i.test(question) &&
-                                     conversationHistory.length > 0;
-
-    if (isAggregationOnPrevious) {
-      // Get the last query results from conversation history
-      const lastConversation = conversationHistory[conversationHistory.length - 1];
-      
-      // Edge case: No results in previous query
-      if (!lastConversation.results || lastConversation.results.length === 0) {
-        return res.json({
-          question,
-          soql: null,
-          data: { records: [], totalSize: 0 },
-          explanation: 'The previous query returned no results, so there is no data to perform calculations on.',
-          recordCount: 0,
-          response: 'No data available from previous query to calculate.',
-          calculatedByLLM: true
-        });
-      }
-
-      // Edge case: Too much data (>100 records) - limit what we send to LLM
-      const resultsToAnalyze = lastConversation.results.slice(0, 100);
-      const isTruncated = lastConversation.results.length > 100;
-      
-      console.log('💡 Detected aggregation on previous results - using LLM calculation instead of SOQL');
-      console.log(`   Analyzing ${resultsToAnalyze.length} records${isTruncated ? ` (truncated from ${lastConversation.results.length})` : ''}`);
-      
-      // Ask LLM to perform the calculation on the previous results
-      const calcPrompt = `You are analyzing Salesforce data. The user previously asked: "${lastConversation.question}"
-
-This returned ${lastConversation.recordCount} records${isTruncated ? ` (showing first ${resultsToAnalyze.length} for analysis)` : ''}.
-
-Sample of the data:
-${JSON.stringify(resultsToAnalyze.slice(0, 10), null, 2)}
-
-Now the user asks: "${question}"
-
-Please:
-1. Identify which field(s) to perform the calculation on (look for numeric fields like Amount, Total, Count, etc.)
-2. Perform the requested calculation/aggregation${isTruncated ? ' on ALL ' + lastConversation.recordCount + ' records (extrapolate if needed)' : ''}
-3. Show your reasoning
-4. Provide the final answer clearly
-
-If the question is ambiguous about which field to use, state your assumption.
-
-Format your response as:
-FIELD USED: [field name]
-CALCULATION: [show the calculation or method]
-RESULT: [the final number/answer]
-EXPLANATION: [brief explanation]`;
-
-      const llmRes = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${NVIDIA_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: NVIDIA_MODEL,
-          messages: [{ role: 'user', content: calcPrompt }],
-          temperature: 0.2,
-          max_tokens: 1024
-        })
-      });
-
-      if (!llmRes.ok) {
-        throw new Error(`LLM calculation failed: ${llmRes.status}`);
-      }
-
-      const llmData = await llmRes.json();
-      const llmResponse = llmData.choices[0].message.content;
-
-      // Extract the result
-      const resultMatch = llmResponse.match(/RESULT:\s*([^\n]+)/i);
-      const result = resultMatch ? resultMatch[1].trim() : 'See explanation below';
-
-      return res.json({
-        question,
-        soql: null, // No SOQL query needed
-        data: { records: [], totalSize: 0 },
-        explanation: llmResponse,
-        recordCount: 0,
-        response: `Result: ${result}`,
-        calculatedByLLM: true
-      });
-    }
-
-    // Step 1: Generate SOQL with context
-    console.log('📝 Step 1: Generating SOQL with context...');
-    console.log('📜 Conversation history:', conversationHistory.length, 'messages');
-    
-    const soqlGenerationResult = await generateSOQLWithContext(question, objectHint, conversationHistory);
-    
-    if (soqlGenerationResult.needsClarification) {
-      return res.json(soqlGenerationResult);
-    }
-
-    // Step 2: Execute query
-    console.log('📊 Step 2: Executing query...');
-    const queryResult = await query(soqlGenerationResult.soql);
-
-    // Check if this is an aggregate query
-    const isAggregateQuery = /SELECT\s+(AVG|SUM|COUNT|MAX|MIN|COUNT_DISTINCT)\s*\(/i.test(soqlGenerationResult.soql);
-    
-    // Step 3: Get explanation from LLM
-    console.log('💡 Step 3: Generating explanation...');
-    const llmRes = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${NVIDIA_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: NVIDIA_MODEL,
-        messages: [{
-          role: 'user',
-          content: `Question: "${question}"\nSOQL: ${soqlGenerationResult.soql}\nResults: ${JSON.stringify(queryResult.records.slice(0, 5))}\n\nProvide a clear, concise explanation of what this query does and the results.`
-        }],
-        temperature: 0.7,
-        max_tokens: 512
-      })
-    });
-
-    if (!llmRes.ok) {
-      const errorText = await llmRes.text();
-      console.error('LLM explanation error:', errorText);
-      throw new Error(`LLM explanation failed: ${llmRes.status}`);
-    }
-
-    const llmData = await llmRes.json();
-
-    // Format response text based on query type
-    let responseText = `Found ${queryResult.totalSize} records.`;
-    if (isAggregateQuery && queryResult.records.length > 0) {
-      const result = queryResult.records[0];
-      const keys = Object.keys(result).filter(k => k !== 'attributes');
-      if (keys.length > 0) {
-        const value = result[keys[0]];
-        responseText = `Result: ${value !== null ? value : 'No data'}`;
-      }
-    }
-
-    res.json({
-      question,
-      soql: soqlGenerationResult.soql,
-      data: queryResult,
-      explanation: llmData.choices[0].message.content,
-      recordCount: queryResult.totalSize,
-      response: responseText
-    });
-
-  } catch (error) {
-    console.error('❌ POST /smart-query error:', error);
-    res.status(500).json({ error: error.message, stack: error.stack });
-  }
-});
-
-// Internal function to generate SOQL with conversation context
-async function generateSOQLWithContext(question, objectHint, conversationHistory = []) {
   const fieldQueryMatch = question.toLowerCase().match(/fields?.*(?:of|for|in)\s+(\w+)/);
   let detectedObject = objectHint;
   
   if (fieldQueryMatch) {
-    detectedObject = fieldQueryMatch[1].replace(/barcode[_\s]config/i, 'Barcode_Config__c');
+    detectedObject = fieldQueryMatch[1];
   }
 
   const customObjMatch = question.match(/(\w+__c)/i);
@@ -733,7 +370,7 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
 
       if (matchedObject) {
         const objSchema = await getObjectSchema(matchedObject.apiName);
-        objectFieldsList = `\n\nAvailable fields for ${matchedObject.apiName}:\n${objSchema.fields.map(f => `- ${f.QualifiedApiName} (${f.DataType}) - ${f.Label}`).join('\n')}`;
+        objectFieldsList = `\n\nFIELDS for ${matchedObject.apiName}:\n${objSchema.fields.map(f => `- ${f.QualifiedApiName} (${f.DataType})`).join('\n')}`;
         isFieldsQuery = true;
         detectedObject = matchedObject.apiName;
       }
@@ -742,10 +379,9 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
     }
   }
 
-  // Detect if question is referencing previous results
-  const isReferencingPrevious = /\b(above|those|these|the previous|that|them|it|related|from|of)\b/i.test(question);
+  const isReferencingPrevious = /\b(above|those|these|previous|that|them)\b/i.test(question);
+  const isAddingFields = /\b(related|also|as well|include|show|add|too)\b/i.test(question) && isReferencingPrevious;
   
-  // Extract potential object names from the current question
   const allObjects = [...schema.standard, ...schema.custom];
   const questionLower = question.toLowerCase();
   const mentionedObjects = allObjects.filter(obj => 
@@ -753,90 +389,81 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
     questionLower.includes(obj.label.toLowerCase())
   );
   
-  // Get the object from the last query in history
   let previousObject = null;
+  let previousLimit = null;
+  let previousWhereClause = null;
+  
   if (conversationHistory.length > 0) {
     const lastQuery = conversationHistory[conversationHistory.length - 1];
-    // Extract object name from SOQL (pattern: FROM ObjectName)
     const fromMatch = lastQuery.soql.match(/FROM\s+(\w+)/i);
     if (fromMatch) {
       previousObject = fromMatch[1];
     }
+    
+    const limitMatch = lastQuery.soql.match(/LIMIT\s+(\d+)/i);
+    if (limitMatch) {
+      previousLimit = limitMatch[1];
+    }
+    
+    const whereMatch = lastQuery.soql.match(/WHERE\s+(.+?)(?:ORDER BY|LIMIT|$)/i);
+    if (whereMatch) {
+      previousWhereClause = whereMatch[1].trim();
+    }
   }
   
-  // Determine if this is a new query or related to previous
-  let isNewQuery = false;
-  if (mentionedObjects.length > 0 && previousObject) {
-    // If user mentions a different object than the previous query, it's a new query
-    // UNLESS they use "related" keywords
-    const isDifferentObject = !mentionedObjects.some(obj => 
-      obj.apiName.toLowerCase() === previousObject.toLowerCase()
-    );
-    const hasRelatedKeywords = /\b(related|from|of|for)\b/i.test(question);
-    isNewQuery = isDifferentObject && !hasRelatedKeywords;
-  }
+  const isDifferentObject = mentionedObjects.length > 0 && previousObject && 
+                            !mentionedObjects.some(obj => obj.apiName.toLowerCase() === previousObject.toLowerCase());
+  const hasRelatedKeywords = /\b(related|from|of|for)\b/i.test(question);
+  const isNewQuery = isDifferentObject && !hasRelatedKeywords && !isAddingFields;
   
-  // Build conversation context for the LLM
   let conversationContext = '';
   if (conversationHistory.length > 0 && isReferencingPrevious && !isNewQuery) {
-    conversationContext = '\n\nPREVIOUS CONVERSATION CONTEXT:\n';
-    conversationHistory.forEach((msg, idx) => {
-      conversationContext += `${idx + 1}. User: ${msg.question}\n`;
-      conversationContext += `   SOQL Generated: ${msg.soql}\n`;
+    conversationContext = '\n\n=== PREVIOUS CONVERSATION CONTEXT ===\n';
+    conversationHistory.slice(-2).forEach((msg, idx) => {
+      conversationContext += `\n${idx + 1}. User asked: "${msg.question}"\n`;
+      conversationContext += `   SOQL: ${msg.soql}\n`;
       if (msg.recordCount) {
-        conversationContext += `   Results: ${msg.recordCount} records found\n`;
+        conversationContext += `   Records found: ${msg.recordCount}\n`;
+      }
+      
+      const idMatch = msg.soql.match(/WHERE\s+Id\s*=\s*'([^']+)'/i);
+      if (idMatch) {
+        conversationContext += `   ⚠️ IMPORTANT ID: ${idMatch[1]}\n`;
       }
       conversationContext += '\n';
     });
-    conversationContext += `IMPORTANT: The user is referring to the LAST query above (Object: ${previousObject}).\n`;
-    conversationContext += 'Use the SAME WHERE clause and conditions from that query when appropriate.\n';
-    conversationContext += 'NOTE: For aggregations/calculations on previous LIMITED results (queries with LIMIT), the system will use LLM to calculate instead of SOQL.\n';
-    conversationContext += 'If the user asks about RELATED objects (e.g., "related accounts", "contacts from those opportunities"):\n';
-    conversationContext += '  - Use relationship queries or lookup fields to connect to the previous results\n';
-    conversationContext += '  - Example: If previous was Opportunity, and user asks "related accounts":\n';
-    conversationContext += '    Use: SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE Amount > 0)\n\n';
+    
+    conversationContext += `\n🎯 CONTEXT: User is referring to the LAST query (Object: ${previousObject}).\n\n`;
+    
+    if (isAddingFields) {
+      conversationContext += '⚠️ USER WANTS TO ADD/SHOW MORE FIELDS from SAME records:\n';
+      conversationContext += `- Keep SAME object: ${previousObject}\n`;
+      if (previousLimit) {
+        conversationContext += `- Keep SAME LIMIT: ${previousLimit}\n`;
+      }
+      if (previousWhereClause) {
+        conversationContext += `- Keep SAME WHERE clause: ${previousWhereClause}\n`;
+        
+        const idInWhere = previousWhereClause.match(/Id\s*=\s*'([^']+)'/i);
+        if (idInWhere) {
+          conversationContext += `- ⚠️ USE THIS EXACT ID: ${idInWhere[1]}\n`;
+        }
+      }
+      conversationContext += `- ADD the requested fields (Account.Name, Who.Name, What.Name, etc.)\n`;
+      conversationContext += `\nExample:\n`;
+      conversationContext += `  Previous: SELECT Id, Subject FROM Task WHERE Id = '00TGA00003fTAL32AO'\n`;
+      conversationContext += `  User: "show client name too"\n`;
+      conversationContext += `  Generate: SELECT Id, Subject, WhoId, Who.Name, WhatId, What.Name FROM Task WHERE Id = '00TGA00003fTAL32AO'\n\n`;
+    } else {
+      conversationContext += '- Reuse WHERE conditions, LIMIT, ORDER BY when appropriate\n';
+      conversationContext += '- For related objects, use subqueries or relationship fields\n';
+      conversationContext += '- ALWAYS use exact IDs from previous queries\n\n';
+    }
   } else if (conversationHistory.length > 0 && isNewQuery) {
-    // User is asking about a different object - this is a new query
-    conversationContext = '\n\nNOTE: This appears to be a NEW question about a different object than the previous query. Generate a fresh SOQL query.\n\n';
+    conversationContext = '\n\n=== NEW QUERY ===\nThis is a different topic. Generate a fresh SOQL query.\n\n';
   }
 
-  const prompt = `You are a Salesforce SOQL expert. Generate valid SOQL queries following these STRICT RULES:
-
-CRITICAL SOQL RULES:
-1. NEVER use "SELECT *" - SOQL does NOT support this syntax
-2. ALWAYS explicitly list field names: SELECT Id, Name, Field1__c FROM Object
-3. Custom objects end with __c (e.g., Barcode_Config__c)
-4. Custom fields end with __c (e.g., Custom_Field__c)
-5. Use EXACT API names from the schema provided
-6. For "top N" queries with amounts/numbers:
-   - ALWAYS add WHERE clause to exclude null/zero values: WHERE Amount > 0
-   - ALWAYS add ORDER BY clause: ORDER BY Amount DESC
-   - Use LIMIT for "top N": LIMIT 5
-7. CONTEXT AWARENESS:
-   - If user references previous results with "above", "those", "these", use the same WHERE conditions
-   - If user asks about RELATED objects (e.g., "related accounts", "contacts from those opportunities"):
-     * Use subqueries: SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE [previous conditions])
-     * Or use relationship fields from the previous object
-   - If user asks about a DIFFERENT unrelated object, treat it as a NEW query
-   - NOTE: Aggregations/calculations on LIMITED results will be handled by the system using LLM, not SOQL
-8. RELATIONSHIP QUERIES:
-   - Opportunities have AccountId (lookup to Account)
-   - Contacts have AccountId (lookup to Account)
-   - Use subqueries for related records across objects
-
-${schemaText}${objectFieldsList}${conversationContext}
-
-Current Question: ${question}
-
-${isFieldsQuery ? `
-This is a request to see ALL fields of an object.
-Generate a SELECT query that includes ALL the fields listed above.
-Example format: SELECT Id, Field1__c, Field2__c, Field3__c FROM ${detectedObject}
-` : ''}
-
-If you need clarification about which object to use, respond: CLARIFICATION_NEEDED: [your question]
-
-Otherwise, respond ONLY with the valid SOQL query (no markdown, no explanations, no SELECT *).`;
+  const prompt = buildSOQLPrompt(question, schemaText, objectFieldsList, conversationContext, detectedObject, isFieldsQuery);
 
   const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
     method: 'POST',
@@ -869,31 +496,368 @@ Otherwise, respond ONLY with the valid SOQL query (no markdown, no explanations,
 
   result = result.replace(/```sql\n?/g, '').replace(/```\n?/g, '').trim();
   
+  // Validation: Check for common errors
   if (result.includes('SELECT *')) {
-    result = result.replace(/SELECT \*/gi, `SELECT Id, Name`);
+    console.warn('⚠️ Found SELECT * - replacing with Id, Name');
+    result = result.replace(/SELECT \*/gi, 'SELECT Id, Name');
+  }
+  
+  // Validation: Check for placeholder IDs
+  const placeholderPatterns = [
+    /your_\w+_id/i,
+    /replace_with/i,
+    /\[id\]/i,
+    /'id'/i,
+    /'xxx'/i
+  ];
+  
+  const hasPlaceholder = placeholderPatterns.some(pattern => pattern.test(result));
+  if (hasPlaceholder) {
+    console.error('❌ LLM generated placeholder ID');
+    console.error('   Generated query:', result);
+    
+    // Try to fix using ID from previous query
+    if (conversationHistory.length > 0) {
+      const lastQuery = conversationHistory[conversationHistory.length - 1].soql;
+      const idFromPrevious = lastQuery.match(/WHERE\s+Id\s*=\s*'([^']+)'/i);
+      
+      if (idFromPrevious) {
+        console.log('✅ Fixing with ID from previous query:', idFromPrevious[1]);
+        result = result.replace(/('your_\w+_id'|'replace_with[^']*'|'\[id\]'|'id'|'xxx')/gi, `'${idFromPrevious[1]}'`);
+      }
+    }
   }
 
   return {
     soql: result,
     originalQuestion: question,
     needsClarification: false,
-    detectedObject: detectedObject || null
+    detectedObject
   };
 }
 
-app.post('/chat', async (req, res) => {
-  console.log('🔍 POST /chat called');
+// ============================================
+// API ENDPOINTS
+// ============================================
+
+app.get('/health', async (req, res) => {
+  let sfStatus = 'not connected';
   try {
-    if (!NVIDIA_API_KEY) {
-      return res.status(503).json({ error: 'LLM not configured' });
+    if (sfConnection) {
+      await sfConnection.identity();
+      sfStatus = 'connected';
     }
+  } catch (err) {
+    sfStatus = 'error';
+  }
+  
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    salesforce: {
+      status: sfStatus,
+      currentUserId: currentUserId || 'Not loaded'
+    },
+    llm: {
+      configured: !!NVIDIA_API_KEY,
+      model: NVIDIA_MODEL
+    }
+  });
+});
+
+app.get('/schema', async (req, res) => {
+  try {
+    const schema = await getOrgSchema();
+    res.json(schema);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/schema/:objectName', async (req, res) => {
+  try {
+    const schema = await getObjectSchema(req.params.objectName);
+    res.json(schema);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/query', async (req, res) => {
+  try {
+    const { soql } = req.body;
+    if (!soql) return res.status(400).json({ error: 'soql required' });
+    const result = await query(soql);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/create', async (req, res) => {
+  try {
+    const { objectType, data } = req.body;
+    if (!objectType || !data) return res.status(400).json({ error: 'objectType and data required' });
+    const result = await createRecord(objectType, data);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/update', async (req, res) => {
+  try {
+    const { objectType, id, data } = req.body;
+    if (!objectType || !id || !data) return res.status(400).json({ error: 'objectType, id, data required' });
+    const result = await updateRecord(objectType, id, data);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/delete', async (req, res) => {
+  try {
+    const { objectType, id } = req.body;
+    if (!objectType || !id) return res.status(400).json({ error: 'objectType and id required' });
+    const result = await deleteRecord(objectType, id);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/describe-object', async (req, res) => {
+  try {
+    const { objectName } = req.body;
+    if (!objectName) return res.status(400).json({ error: 'objectName required' });
+
+    const objSchema = await getObjectSchema(objectName);
+    const fieldNames = objSchema.fields.map(f => f.QualifiedApiName);
+    const soql = `SELECT ${fieldNames.join(', ')} FROM ${objectName} LIMIT 10`;
+    
+    let sampleData = null;
+    try {
+      sampleData = await query(soql);
+    } catch (err) {
+      console.log('Could not fetch sample data');
+    }
+    
+    res.json({
+      objectName,
+      fieldCount: objSchema.fields.length,
+      fields: objSchema.fields,
+      generatedSOQL: soql,
+      sampleData
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/generate-soql', async (req, res) => {
+  try {
+    if (!NVIDIA_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
+
+    await getConnection();
+    const { question, objectHint } = req.body;
+    if (!question) return res.status(400).json({ error: 'question required' });
+
+    const result = await generateSOQLWithContext(question, objectHint, []);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/summarize', async (req, res) => {
+    try {
+        if (!NVIDIA_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
+        const { textData, isChunk, isFinal } = req.body;
+
+        const systemPrompt = `You are a JSON-only response bot. 
+        Return ONLY valid JSON. No preamble. No markdown. No explanations.
+        Required Format: {"summary": "your text here", "sentiment": "Neutral"}`;
+
+        const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${NVIDIA_API_KEY}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                model: NVIDIA_MODEL,
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: textData }
+                ],
+                temperature: 0.1,
+                // Remove response_format: {type: 'json_object'} if it keeps failing, 
+                // as some NVIDIA endpoints handle it poorly.
+            })
+        });
+
+        const data = await response.json();
+        let content = data.choices[0].message.content.trim();
+        console.log(`Raw summary response: ${content}`);
+
+        // --- THE "BULLETPROOF" CLEANER ---
+        // 1. Remove markdown blocks
+        content = content.replace(/```json|```/g, "").trim();
+        console.log(`Remove markdown blocks summary response: ${content}`);
+        // 2. Find the FIRST '{' and the LAST '}'
+        const firstBracket = content.indexOf('{');
+        const lastBracket = content.lastIndexOf('}');
+        
+        if (firstBracket === -1 || lastBracket === -1) {
+            throw new Error("No JSON object found in LLM response");
+        }
+        
+        // 3. Slice the string to get ONLY the JSON block
+        content = content.substring(firstBracket, lastBracket + 1);
+        console.log(`Removed bracket summary response: ${content}`);
+        // 4. Sanitize internal newlines that break JSON parsing
+        content = content.replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+        console.log(`Removed regex summary response: ${content}`);
+        // 5. Attempt Parse
+        const finalJson = JSON.parse(content);
+        console.log(`final summary response: ${content}`);
+        res.json(finalJson);
+
+    } catch (error) {
+        console.error('❌ Final Failure:', error.message);
+        // Fallback so the LWC doesn't break
+        res.status(200).json({ 
+            summary: "Error parsing result. Check server logs.", 
+            sentiment: "Neutral" 
+        });
+    }
+});
+app.post('/smart-query', async (req, res) => {
+  try {
+    if (!NVIDIA_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
+
+    await getConnection();
+    const { question, objectHint, conversationHistory = [] } = req.body;
+    if (!question) return res.status(400).json({ error: 'question required' });
+
+    const isAggregationOnPrevious = /\b(average|avg|sum|total|count)\b/i.test(question) &&
+                                     /\b(above|those|these)\b/i.test(question) &&
+                                     conversationHistory.length > 0;
+
+    if (isAggregationOnPrevious) {
+      const lastConv = conversationHistory[conversationHistory.length - 1];
+      
+      if (!lastConv.results || lastConv.results.length === 0) {
+        return res.json({
+          question,
+          soql: null,
+          data: { records: [], totalSize: 0 },
+          explanation: 'Previous query had no results',
+          response: 'No data to calculate',
+          calculatedByLLM: true
+        });
+      }
+
+      const calcPrompt = `Previous query: "${lastConv.question}"
+Returned: ${lastConv.recordCount} records
+
+Sample data:
+${JSON.stringify(lastConv.results.slice(0, 5), null, 2)}
+
+Current question: "${question}"
+
+Identify numeric field, perform calculation, format result.
+OUTPUT FORMAT:
+RESULT: [answer]
+EXPLANATION: [reasoning]`;
+
+      const llmRes = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${NVIDIA_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: NVIDIA_MODEL,
+          messages: [{ role: 'user', content: calcPrompt }],
+          temperature: 0.2
+        })
+      });
+
+      const llmData = await llmRes.json();
+      const llmResponse = llmData.choices[0].message.content;
+      const resultMatch = llmResponse.match(/RESULT:\s*([^\n]+)/i);
+      const result = resultMatch ? resultMatch[1].trim() : llmResponse;
+
+      return res.json({
+        question,
+        soql: null,
+        data: { records: [], totalSize: 0 },
+        explanation: llmResponse,
+        response: result,
+        calculatedByLLM: true
+      });
+    }
+
+    const soqlResult = await generateSOQLWithContext(question, objectHint, conversationHistory);
+    
+    if (soqlResult.needsClarification) {
+      return res.json(soqlResult);
+    }
+
+    const queryResult = await query(soqlResult.soql);
+
+    const explainPrompt = `Question: "${question}"
+SOQL: ${soqlResult.soql}
+Results: ${JSON.stringify(queryResult.records.slice(0, 3))}
+
+Explain clearly what this shows. Format numbers/dates properly.`;
+
+    const llmRes = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${NVIDIA_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: NVIDIA_MODEL,
+        messages: [{ role: 'user', content: explainPrompt }],
+        temperature: 0.7,
+        max_tokens: 512
+      })
+    });
+
+    const llmData = await llmRes.json();
+
+    res.json({
+      question,
+      soql: soqlResult.soql,
+      data: queryResult,
+      explanation: llmData.choices[0].message.content,
+      recordCount: queryResult.totalSize,
+      response: `Found ${queryResult.totalSize} records`
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/chat', async (req, res) => {
+  try {
+    if (!NVIDIA_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
 
     const { message, conversationHistory = [], includeSchema = false } = req.body;
-    if (!message) {
-      return res.status(400).json({ error: 'message is required' });
-    }
+    if (!message) return res.status(400).json({ error: 'message required' });
 
-    let systemPrompt = 'You are a helpful Salesforce assistant. You can help with SOQL queries, data analysis, and Salesforce questions.';
+    let systemPrompt = `You are a helpful Salesforce assistant. You can:
+- Answer questions about Salesforce
+- Help with SOQL queries (suggest using /smart-query for data questions)
+- Explain Salesforce concepts
+- Provide best practices
+
+Be concise and helpful.`;
 
     if (includeSchema) {
       const schema = await getOrgSchema();
@@ -920,12 +884,6 @@ app.post('/chat', async (req, res) => {
       })
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Chat API error:', errorText);
-      throw new Error(`Chat API failed: ${response.status}`);
-    }
-
     const data = await response.json();
     res.json({
       response: data.choices[0].message.content,
@@ -933,8 +891,7 @@ app.post('/chat', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ POST /chat error:', error);
-    res.status(500).json({ error: error.message, stack: error.stack });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -942,47 +899,21 @@ app.post('/chat', async (req, res) => {
 // STARTUP
 // ============================================
 
-console.log('\n' + '='.repeat(60));
-console.log('🚀 STARTING SALESFORCE MCP PROVIDER');
-console.log('='.repeat(60));
+console.log('🚀 Starting Salesforce MCP Provider...');
+console.log(`SF Auth: ${SF_ACCESS_TOKEN ? 'Token' : 'Username/Password'}`);
+console.log(`LLM: ${NVIDIA_API_KEY ? 'Configured' : 'Not configured'}`);
 
-console.log('\n📋 Configuration:');
-console.log(`   SF_USERNAME: ${SF_USERNAME ? '✅ Set' : '❌ Not set'}`);
-console.log(`   SF_PASSWORD: ${SF_PASSWORD ? '✅ Set' : '❌ Not set'}`);
-console.log(`   SF_SECURITY_TOKEN: ${SF_SECURITY_TOKEN ? '✅ Set' : '❌ Not set'}`);
-console.log(`   SF_ACCESS_TOKEN: ${SF_ACCESS_TOKEN ? '✅ Set' : '❌ Not set'}`);
-console.log(`   SF_INSTANCE_URL: ${SF_INSTANCE_URL ? '✅ Set' : '❌ Not set'}`);
-console.log(`   NVIDIA_API_KEY: ${NVIDIA_API_KEY ? '✅ Set' : '❌ Not set'}`);
-
-console.log('\n🔐 Testing Salesforce connection...');
 try {
   await getConnection();
-  console.log('✅ Salesforce connection successful!\n');
-  
-  console.log('📥 Fetching initial schema...');
+  console.log('✅ Salesforce connected');
   await getOrgSchema();
-  console.log('✅ Schema loaded!\n');
-  
+  console.log('✅ Schema loaded');
 } catch (error) {
-  console.error('\n❌ STARTUP FAILED:', error.message);
-  console.error('Fix credentials and redeploy.\n');
+  console.error('❌ Startup failed:', error.message);
   process.exit(1);
 }
 
 app.listen(PORT, () => {
-  console.log('='.repeat(60));
-  console.log(`✅ SERVER RUNNING ON PORT ${PORT}`);
-  console.log('='.repeat(60));
-  console.log('\n📊 Endpoints:');
-  console.log(`   GET  /health`);
-  console.log(`   GET  /schema`);
-  console.log(`   GET  /schema/:objectName`);
-  console.log(`   POST /query`);
-  console.log(`   POST /create`);
-  console.log(`   POST /update`);
-  console.log(`   POST /delete`);
-  console.log(`   POST /generate-soql`);
-  console.log(`   POST /smart-query`);
-  console.log(`   POST /chat`);
-  console.log('\n' + '='.repeat(60) + '\n');
+  console.log(`✅ Server running on port ${PORT}`);
+  console.log('   Endpoints: /health, /schema, /query, /smart-query, /chat');
 });

@@ -64,27 +64,74 @@ export default class News extends LightningElement {
     }
 
     async getSummarizedNews(textData) {
+        console.log('📤 Starting chunked summarization');
+        console.log('📝 Total text length:', textData.length);
+        
         try {
-            const res = await fetch(this.PROXY_URL, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ textData })
-            });
-            const result = await res.json();
+            // Split into chunks of 5000 chars
+            const chunkSize = 5000;
+            const chunks = [];
+            for (let i = 0; i < textData.length; i += chunkSize) {
+                chunks.push(textData.substring(i, i + chunkSize));
+            }
             
-            // Handle both object and stringified responses
-            const data = typeof result === 'string' ? JSON.parse(result) : result;
+            console.log('📦 Created', chunks.length, 'chunks');
+            
+            // Summarize each chunk
+            const chunkSummaries = [];
+            for (let i = 0; i < chunks.length; i++) {
+                console.log(`📤 Summarizing chunk ${i + 1}/${chunks.length}`);
+                
+                const res = await fetch(this.PROXY_URL, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ 
+                        textData: chunks[i],
+                        isChunk: true,
+                        chunkNumber: i + 1,
+                        totalChunks: chunks.length
+                    })
+                });
+                
+                if (!res.ok) throw new Error(`Chunk ${i + 1} failed: ${res.status}`);
+                
+                const result = await res.json();
+                const data = typeof result === 'string' ? JSON.parse(result) : result;
+                
+                chunkSummaries.push(data.summary);
+                console.log(`✅ Chunk ${i + 1} done`);
+            }
+            
+            // Now create final summary from all chunk summaries
+            console.log('📤 Creating final summary from', chunkSummaries.length, 'summaries');
+            
+        const finalRes = await fetch(this.PROXY_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ 
+                textData: chunkSummaries.join('\n\n'),
+                isFinal: true
+            })
+        });
+        
+            if (!finalRes.ok) throw new Error(`Final summary failed: ${finalRes.status}`);
+            
+            const finalResult = await finalRes.json();
+            const finalData = typeof finalResult === 'string' ? JSON.parse(finalResult) : finalResult;
 
-            this.sentiment = data.sentiment || 'Neutral';
+            this.sentiment = finalData.sentiment || 'Neutral';
             this.newsArticles = {
                 ...this.newsArticles,
-                content: data.summary || 'Summary unavailable.'
+                content: finalData.summary || 'Summary unavailable.'
             };
+            
+            console.log('✅ Final summary complete');
+            
         } catch (err) {
-            console.error('LLM Error:', err);
-            this.newsArticles.content = "Summary service currently unavailable.";
+            console.error('❌ Summarization error:', err);
+            this.newsArticles.content = "Summary error: " + err.message;
         } finally {
-            this.renderNews = true; 
+            this.renderNews = true;
         }
     }
 
