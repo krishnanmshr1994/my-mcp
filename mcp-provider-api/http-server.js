@@ -557,6 +557,9 @@ app.post('/smart-query', async (req, res) => {
     console.log('📊 Step 2: Executing query...');
     const queryResult = await query(soqlGenerationResult.soql);
 
+    // Check if this is an aggregate query
+    const isAggregateQuery = /SELECT\s+(AVG|SUM|COUNT|MAX|MIN|COUNT_DISTINCT)\s*\(/i.test(soqlGenerationResult.soql);
+    
     // Step 3: Get explanation from LLM
     console.log('💡 Step 3: Generating explanation...');
     const llmRes = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
@@ -584,13 +587,24 @@ app.post('/smart-query', async (req, res) => {
 
     const llmData = await llmRes.json();
 
+    // Format response text based on query type
+    let responseText = `Found ${queryResult.totalSize} records.`;
+    if (isAggregateQuery && queryResult.records.length > 0) {
+      const result = queryResult.records[0];
+      const keys = Object.keys(result).filter(k => k !== 'attributes');
+      if (keys.length > 0) {
+        const value = result[keys[0]];
+        responseText = `Result: ${value !== null ? value : 'No data'}`;
+      }
+    }
+
     res.json({
       question,
       soql: soqlGenerationResult.soql,
       data: queryResult,
       explanation: llmData.choices[0].message.content,
       recordCount: queryResult.totalSize,
-      response: `Found ${queryResult.totalSize} records.`
+      response: responseText
     });
 
   } catch (error) {
