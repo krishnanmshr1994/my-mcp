@@ -5,15 +5,31 @@ export default class JarvisChatbot extends LightningElement {
     @track selectedFeatureLabel = '';
     @track messages = [];
     @track isLoading = false;
+    @track isMobile = false;
+    @track conversationHistory = []; // Track conversation for context
     userInput = '';
     BASE_URL = 'https://my-mcp-6ihw.onrender.com';
 
+    connectedCallback() {
+        // Detect if running in Salesforce mobile app
+        this.isMobile = this.detectMobile();
+        console.log('Is Mobile:', this.isMobile);
+    }
+
+    detectMobile() {
+        // Check for Salesforce mobile app
+        const userAgent = navigator.userAgent || navigator.vendor || window.opera;
+        const isSFMobile = /SalesforceMobileSDK|Salesforce1/i.test(userAgent);
+        const isSmallScreen = window.innerWidth <= 768;
+        return isSFMobile || isSmallScreen;
+    }
+
     handleSelectQuery() { 
-        this.activateChat('Smart Query', '"Show top 5 Accounts"'); 
+        this.activateChat('Smart Query', 'Find records.'); 
     }
     
     handleSelectChat() { 
-        this.activateChat('General Chat', 'How can I assist you today?'); 
+        this.activateChat('General Chat', 'Ask me anything.'); 
     }
 
     activateChat(label, welcomeMsg) {
@@ -26,13 +42,15 @@ export default class JarvisChatbot extends LightningElement {
             bubbleClass: 'bot-bubble',
             hasExplanation: false,
             hasRecords: false,
-            showExplanation: false
+            showExplanation: false,
+            isMobile: this.isMobile
         }];
     }
 
     handleBack() { 
         this.isChatActive = false; 
-        this.messages = []; 
+        this.messages = [];
+        this.conversationHistory = []; // Clear history when going back
         this.userInput = '';
     }
     
@@ -52,20 +70,21 @@ export default class JarvisChatbot extends LightningElement {
         event.stopPropagation();
         const msgId = event.currentTarget.dataset.id;
         
-        console.log('Toggle clicked for message:', msgId);
-        
-        this.messages = this.messages.map(msg => {
+        // Force a complete re-render by creating entirely new array
+        const updatedMessages = [];
+        for (let msg of this.messages) {
             if (msg.id.toString() === msgId.toString()) {
                 const newShowState = !msg.showExplanation;
-                console.log('Toggling explanation:', msg.showExplanation, '->', newShowState);
-                return { 
-                    ...msg, 
-                    showExplanation: newShowState, 
-                    toggleLabel: newShowState ? 'Hide explanation' : 'Why use this?' 
-                };
+                updatedMessages.push({
+                    ...msg,
+                    showExplanation: newShowState,
+                    toggleLabel: newShowState ? 'Hide explanation' : 'Why use this?'
+                });
+            } else {
+                updatedMessages.push({...msg});
             }
-            return msg;
-        });
+        }
+        this.messages = updatedMessages;
     }
 
     async handleSendMessage() {
@@ -75,25 +94,39 @@ export default class JarvisChatbot extends LightningElement {
         this.userInput = '';
         
         // Add user message
-        this.messages = [...this.messages, { 
+        const userMessage = { 
             id: `user-${Date.now()}`, 
             text: userText, 
             containerClass: 'user-container', 
             bubbleClass: 'user-bubble',
             hasExplanation: false,
             hasRecords: false,
-            showExplanation: false
-        }];
+            showExplanation: false,
+            isMobile: this.isMobile
+        };
         
+        this.messages = [...this.messages, userMessage];
         this.isLoading = true;
         this.scrollToBottom();
 
         try {
             const endpoint = this.selectedFeatureLabel === 'Smart Query' ? '/smart-query' : '/chat';
+            
+            // Prepare request body with conversation history for Smart Query
+            const requestBody = {
+                question: userText,
+                message: userText
+            };
+            
+            // Add conversation history for Smart Query to maintain context
+            if (endpoint === '/smart-query') {
+                requestBody.conversationHistory = this.conversationHistory;
+            }
+            
             const response = await fetch(`${this.BASE_URL}${endpoint}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ question: userText, message: userText })
+                body: JSON.stringify(requestBody)
             });
             
             if (!response.ok) {
@@ -101,7 +134,6 @@ export default class JarvisChatbot extends LightningElement {
             }
             
             const data = await response.json();
-            console.log('API Response:', data);
             
             // Process records
             let rawRecords = data.data?.records || null;
@@ -112,24 +144,29 @@ export default class JarvisChatbot extends LightningElement {
             
             if (hasRecords) {
                 const columnKeys = Object.keys(rawRecords[0]).filter(k => k !== 'attributes');
-                columns = columnKeys.map(k => ({ label: k, fieldName: k }));
-                processedRecords = rawRecords.map((r, idx) => ({
-                    Id: r.Id || `rec-${idx}`,
-                    fields: columnKeys.map(key => ({ 
-                        name: key, 
-                        label: key, 
-                        value: r[key] != null ? String(r[key]) : '' 
-                    }))
-                }));
+                columns = columnKeys.map(k => ({ label: k, fieldName: k, type: 'text' }));
+                processedRecords = rawRecords.map((r, idx) => {
+                    const record = {
+                        Id: r.Id || `rec-${idx}`
+                    };
+                    const fields = [];
+                    columnKeys.forEach(key => {
+                        fields.push({
+                            name: key,
+                            label: key,
+                            value: r[key] != null ? String(r[key]) : ''
+                        });
+                    });
+                    record.fields = fields;
+                    return record;
+                });
             }
 
             // Check if explanation exists and is not empty
-            const hasExplanation = Boolean(data.explanation && data.explanation.trim().length > 0);
-            
-            console.log('Has explanation:', hasExplanation);
-            console.log('Has records:', hasRecords);
+            const explanationText = data.explanation ? String(data.explanation).trim() : '';
+            const hasExplanation = explanationText.length > 0;
 
-            // Create bot message
+            // Create bot message with all properties
             const botMessage = {
                 id: `bot-${Date.now()}`,
                 text: data.response || "Results:",
@@ -137,25 +174,36 @@ export default class JarvisChatbot extends LightningElement {
                 bubbleClass: 'bot-bubble',
                 hasExplanation: hasExplanation,
                 hasRecords: hasRecords,
-                showExplanation: false, // CRITICAL: Always start hidden
-                toggleLabel: 'Why use this?'
+                showExplanation: false, // ALWAYS start false
+                toggleLabel: 'Why use this?',
+                isMobile: this.isMobile
             };
 
-            // Only add explanation property if it exists
             if (hasExplanation) {
-                botMessage.explanation = data.explanation;
+                botMessage.explanation = explanationText;
             }
 
-            // Only add records if they exist
             if (hasRecords) {
                 botMessage.rawRecords = rawRecords;
                 botMessage.records = processedRecords;
                 botMessage.columns = columns;
             }
-
-            console.log('Bot message object:', botMessage);
             
             this.messages = [...this.messages, botMessage];
+            
+            // Add to conversation history for Smart Query context
+            if (endpoint === '/smart-query' && data.soql) {
+                this.conversationHistory = [...this.conversationHistory, {
+                    question: userText,
+                    soql: data.soql,
+                    recordCount: data.recordCount || 0
+                }];
+                
+                // Keep only last 5 conversations to avoid token limits
+                if (this.conversationHistory.length > 5) {
+                    this.conversationHistory = this.conversationHistory.slice(-5);
+                }
+            }
             
         } catch (e) { 
             console.error('Error fetching data:', e);
@@ -166,7 +214,8 @@ export default class JarvisChatbot extends LightningElement {
                 bubbleClass: 'bot-bubble',
                 hasExplanation: false,
                 hasRecords: false,
-                showExplanation: false
+                showExplanation: false,
+                isMobile: this.isMobile
             }];
         } finally { 
             this.isLoading = false; 
@@ -180,6 +229,6 @@ export default class JarvisChatbot extends LightningElement {
             if (container) {
                 container.scrollTop = container.scrollHeight;
             }
-        }, 150);
+        }, 200);
     }
 }

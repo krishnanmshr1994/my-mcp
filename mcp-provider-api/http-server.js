@@ -538,16 +538,16 @@ app.post('/smart-query', async (req, res) => {
       return res.status(503).json({ error: 'LLM not configured' });
     }
 
-    const { question, objectHint } = req.body;
+    const { question, objectHint, conversationHistory = [] } = req.body;
     if (!question) {
       return res.status(400).json({ error: 'question is required' });
     }
 
-    // Step 1: Generate SOQL using internal call
-    console.log('📝 Step 1: Generating SOQL...');
+    // Step 1: Generate SOQL with context
+    console.log('📝 Step 1: Generating SOQL with context...');
+    console.log('📜 Conversation history:', conversationHistory.length, 'messages');
     
-    // Call generate-soql logic directly instead of HTTP request
-    const soqlGenerationResult = await generateSOQLInternal(question, objectHint);
+    const soqlGenerationResult = await generateSOQLWithContext(question, objectHint, conversationHistory);
     
     if (soqlGenerationResult.needsClarification) {
       return res.json(soqlGenerationResult);
@@ -599,8 +599,8 @@ app.post('/smart-query', async (req, res) => {
   }
 });
 
-// Internal function to generate SOQL (to avoid HTTP calls)
-async function generateSOQLInternal(question, objectHint) {
+// Internal function to generate SOQL with conversation context
+async function generateSOQLWithContext(question, objectHint, conversationHistory = []) {
   const fieldQueryMatch = question.toLowerCase().match(/fields?.*(?:of|for|in)\s+(\w+)/);
   let detectedObject = objectHint;
   
@@ -639,6 +639,21 @@ async function generateSOQLInternal(question, objectHint) {
     }
   }
 
+  // Build conversation context for the LLM
+  let conversationContext = '';
+  if (conversationHistory.length > 0) {
+    conversationContext = '\n\nPREVIOUS CONVERSATION CONTEXT:\n';
+    conversationHistory.forEach((msg, idx) => {
+      conversationContext += `${idx + 1}. User: ${msg.question}\n`;
+      conversationContext += `   SOQL Generated: ${msg.soql}\n`;
+      if (msg.recordCount) {
+        conversationContext += `   Results: ${msg.recordCount} records found\n`;
+      }
+      conversationContext += '\n';
+    });
+    conversationContext += 'IMPORTANT: If the user references "above", "those", "these", "the previous", etc., they are referring to the LAST query in the context above. Use the SAME WHERE clause and conditions from that query.\n\n';
+  }
+
   const prompt = `You are a Salesforce SOQL expert. Generate valid SOQL queries following these STRICT RULES:
 
 CRITICAL SOQL RULES:
@@ -652,10 +667,15 @@ CRITICAL SOQL RULES:
    - ALWAYS add ORDER BY clause: ORDER BY Amount DESC
    - Use LIMIT for "top N": LIMIT 5
    - Example: SELECT Id, Name, Amount FROM Opportunity WHERE Amount > 0 ORDER BY Amount DESC LIMIT 5
+7. CONTEXT AWARENESS - If user says "above", "those", "these records", "the previous":
+   - Use the SAME object and WHERE conditions from the most recent query in conversation history
+   - For aggregations (AVG, SUM, COUNT, MAX, MIN), add the aggregate function but keep the WHERE clause
+   - Example: If previous was "SELECT Id, Name, Amount FROM Opportunity WHERE Amount > 0 ORDER BY Amount DESC LIMIT 5"
+     And user asks "average amount of the above", generate: "SELECT AVG(Amount) FROM Opportunity WHERE Amount > 0"
 
-${schemaText}${objectFieldsList}
+${schemaText}${objectFieldsList}${conversationContext}
 
-Question: ${question}
+Current Question: ${question}
 
 ${isFieldsQuery ? `
 This is a request to see ALL fields of an object.
