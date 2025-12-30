@@ -552,16 +552,29 @@ app.post('/summarize', async (req, res) => {
                 messages: [
                     {
                         role: "system",
-                        content: "You are a business analyst. Summarize the following news into 3-5 concise bullet points. Focus on financial and strategic updates. Use a professional tone."
+                        content: `You are a business analyst. Analyze the provided news and return a JSON object.
+                        
+                        STRICT JSON STRUCTURE:
+                        {
+                            "summary": "HTML string containing only <ul> and <li> tags with 3-5 bullet points",
+                            "sentiment": "Positive", "Negative", or "Neutral"
+                        }
+                        
+                        RULES:
+                        1. Do NOT include introductory text (e.g., "Here is the summary").
+                        2. Use valid HTML tags for the summary.
+                        3. Focus on financial and strategic updates.`
                     },
                     {
                         role: "user",
-                        content: `Format the following news as a bulleted list:\n\n${textData}`
+                        content: `Analyze and summarize this news text:\n\n${textData}`
                     }
                 ],
-                temperature: 0.5
+                // This flag ensures the model outputs valid JSON
+                response_format: { type: "json_object" },
+                temperature: 0.2
             })
-        }); // Added missing closing parenthesis and brace here
+        });
 
         const data = await response.json();
         
@@ -570,7 +583,13 @@ app.post('/summarize', async (req, res) => {
             return res.status(500).json({ error: data.error });
         }
 
-        res.json(data);
+        // The LLM returns the JSON as a string inside the 'content' field
+        const resultString = data.choices[0].message.content;
+        const resultJSON = JSON.parse(resultString);
+
+        // Send the parsed JSON back to your LWC
+        res.json(resultJSON);
+
     } catch (error) {
         console.error('Summarize Error:', error.message);
         res.status(500).json({ error: error.message });
