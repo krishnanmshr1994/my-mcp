@@ -99,7 +99,7 @@ async function getConnection() {
 // ============================================
 
 async function query(soql) {
-  console.log(`📊 Executing query: ${soql.substring(0, 80)}...`);
+  console.log(`📊 Executing query: ${soql.substring(0, 100)}...`);
   const conn = await getConnection();
   
   try {
@@ -366,14 +366,10 @@ app.post('/describe-object', async (req, res) => {
 
     console.log(`📋 Describing object: ${objectName}`);
     
-    // Get all fields
     const objSchema = await getObjectSchema(objectName);
-    
-    // Generate SOQL with ALL fields
     const fieldNames = objSchema.fields.map(f => f.QualifiedApiName);
     const soql = `SELECT ${fieldNames.join(', ')} FROM ${objectName} LIMIT 10`;
     
-    // Execute query to get sample data
     let sampleData = null;
     try {
       sampleData = await query(soql);
@@ -410,7 +406,7 @@ app.post('/generate-soql', async (req, res) => {
       return res.status(400).json({ error: 'question is required' });
     }
 
-    // Detect if user is asking about fields of an object
+    // Detect object from question
     const fieldQueryMatch = question.toLowerCase().match(/fields?.*(?:of|for|in)\s+(\w+)/);
     let detectedObject = objectHint;
     
@@ -418,7 +414,6 @@ app.post('/generate-soql', async (req, res) => {
       detectedObject = fieldQueryMatch[1].replace(/barcode[_\s]config/i, 'Barcode_Config__c');
     }
 
-    // Auto-detect custom object names from question
     const customObjMatch = question.match(/(\w+__c)/i);
     if (customObjMatch) {
       detectedObject = customObjMatch[1];
@@ -430,13 +425,11 @@ app.post('/generate-soql', async (req, res) => {
     let objectFieldsList = '';
     let isFieldsQuery = false;
     
-    // If asking about fields, fetch them first
     if (detectedObject || fieldQueryMatch) {
       try {
         const targetObject = detectedObject || fieldQueryMatch[1];
         console.log(`🔍 Detected request for fields of: ${targetObject}`);
         
-        // Find the correct object name from schema
         const allObjects = [...schema.standard, ...schema.custom];
         const matchedObject = allObjects.find(obj => 
           obj.apiName.toLowerCase().includes(targetObject.toLowerCase()) ||
@@ -457,7 +450,6 @@ app.post('/generate-soql', async (req, res) => {
 
     const prompt = `You are a Salesforce SOQL expert. Generate valid SOQL queries following these STRICT RULES:
 
-CRITICAL SOQL RULES:
 CRITICAL SOQL RULES:
 1. NEVER use "SELECT *" - SOQL does NOT support this syntax
 2. ALWAYS explicitly list field names: SELECT Id, Name, Field1__c FROM Object
@@ -499,7 +491,9 @@ Otherwise, respond ONLY with the valid SOQL query (no markdown, no explanations,
     });
 
     if (!response.ok) {
-      throw new Error(`NVIDIA API error: ${response.status}`);
+      const errorText = await response.text();
+      console.error('NVIDIA API error response:', errorText);
+      throw new Error(`NVIDIA API error: ${response.status} - ${errorText}`);
     }
 
     const data = await response.json();
@@ -533,7 +527,7 @@ Otherwise, respond ONLY with the valid SOQL query (no markdown, no explanations,
 
   } catch (error) {
     console.error('❌ POST /generate-soql error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message, stack: error.stack });
   }
 });
 
@@ -549,22 +543,22 @@ app.post('/smart-query', async (req, res) => {
       return res.status(400).json({ error: 'question is required' });
     }
 
-    // Step 1: Generate SOQL
-    const soqlRes = await fetch(`http://localhost:${PORT}/generate-soql`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, objectHint })
-    });
-    const soqlData = await soqlRes.json();
-
-    if (soqlData.needsClarification) {
-      return res.json(soqlData);
+    // Step 1: Generate SOQL using internal call
+    console.log('📝 Step 1: Generating SOQL...');
+    
+    // Call generate-soql logic directly instead of HTTP request
+    const soqlGenerationResult = await generateSOQLInternal(question, objectHint);
+    
+    if (soqlGenerationResult.needsClarification) {
+      return res.json(soqlGenerationResult);
     }
 
     // Step 2: Execute query
-    const queryResult = await query(soqlData.soql);
+    console.log('📊 Step 2: Executing query...');
+    const queryResult = await query(soqlGenerationResult.soql);
 
     // Step 3: Get explanation from LLM
+    console.log('💡 Step 3: Generating explanation...');
     const llmRes = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -575,28 +569,146 @@ app.post('/smart-query', async (req, res) => {
         model: NVIDIA_MODEL,
         messages: [{
           role: 'user',
-          content: `Question: "${question}"\nSOQL: ${soqlData.soql}\nResults: ${JSON.stringify(queryResult.records.slice(0, 5))}\n\nProvide a clear explanation.`
+          content: `Question: "${question}"\nSOQL: ${soqlGenerationResult.soql}\nResults: ${JSON.stringify(queryResult.records.slice(0, 5))}\n\nProvide a clear, concise explanation of what this query does and the results.`
         }],
         temperature: 0.7,
         max_tokens: 512
       })
     });
 
+    if (!llmRes.ok) {
+      const errorText = await llmRes.text();
+      console.error('LLM explanation error:', errorText);
+      throw new Error(`LLM explanation failed: ${llmRes.status}`);
+    }
+
     const llmData = await llmRes.json();
 
     res.json({
       question,
-      soql: soqlData.soql,
+      soql: soqlGenerationResult.soql,
       data: queryResult,
       explanation: llmData.choices[0].message.content,
-      recordCount: queryResult.totalSize
+      recordCount: queryResult.totalSize,
+      response: `Found ${queryResult.totalSize} records.`
     });
 
   } catch (error) {
     console.error('❌ POST /smart-query error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message, stack: error.stack });
   }
 });
+
+// Internal function to generate SOQL (to avoid HTTP calls)
+async function generateSOQLInternal(question, objectHint) {
+  const fieldQueryMatch = question.toLowerCase().match(/fields?.*(?:of|for|in)\s+(\w+)/);
+  let detectedObject = objectHint;
+  
+  if (fieldQueryMatch) {
+    detectedObject = fieldQueryMatch[1].replace(/barcode[_\s]config/i, 'Barcode_Config__c');
+  }
+
+  const customObjMatch = question.match(/(\w+__c)/i);
+  if (customObjMatch) {
+    detectedObject = customObjMatch[1];
+  }
+
+  const schema = await getOrgSchema();
+  const schemaText = formatSchema(schema);
+
+  let objectFieldsList = '';
+  let isFieldsQuery = false;
+  
+  if (detectedObject || fieldQueryMatch) {
+    try {
+      const targetObject = detectedObject || fieldQueryMatch[1];
+      const allObjects = [...schema.standard, ...schema.custom];
+      const matchedObject = allObjects.find(obj => 
+        obj.apiName.toLowerCase().includes(targetObject.toLowerCase()) ||
+        obj.label.toLowerCase().includes(targetObject.toLowerCase())
+      );
+
+      if (matchedObject) {
+        const objSchema = await getObjectSchema(matchedObject.apiName);
+        objectFieldsList = `\n\nAvailable fields for ${matchedObject.apiName}:\n${objSchema.fields.map(f => `- ${f.QualifiedApiName} (${f.DataType}) - ${f.Label}`).join('\n')}`;
+        isFieldsQuery = true;
+        detectedObject = matchedObject.apiName;
+      }
+    } catch (err) {
+      console.error('Failed to get object fields:', err);
+    }
+  }
+
+  const prompt = `You are a Salesforce SOQL expert. Generate valid SOQL queries following these STRICT RULES:
+
+CRITICAL SOQL RULES:
+1. NEVER use "SELECT *" - SOQL does NOT support this syntax
+2. ALWAYS explicitly list field names: SELECT Id, Name, Field1__c FROM Object
+3. Custom objects end with __c (e.g., Barcode_Config__c)
+4. Custom fields end with __c (e.g., Custom_Field__c)
+5. Use EXACT API names from the schema provided
+6. For "top N" queries with amounts/numbers:
+   - ALWAYS add WHERE clause to exclude null/zero values: WHERE Amount > 0 OR WHERE Amount != null
+   - ALWAYS add ORDER BY clause: ORDER BY Amount DESC
+   - Use LIMIT for "top N": LIMIT 5
+   - Example: SELECT Id, Name, Amount FROM Opportunity WHERE Amount > 0 ORDER BY Amount DESC LIMIT 5
+
+${schemaText}${objectFieldsList}
+
+Question: ${question}
+
+${isFieldsQuery ? `
+This is a request to see ALL fields of an object.
+Generate a SELECT query that includes ALL the fields listed above.
+Example format: SELECT Id, Field1__c, Field2__c, Field3__c FROM ${detectedObject}
+` : ''}
+
+If you need clarification about which object to use, respond: CLARIFICATION_NEEDED: [your question]
+
+Otherwise, respond ONLY with the valid SOQL query (no markdown, no explanations, no SELECT *).`;
+
+  const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${NVIDIA_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: NVIDIA_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+      max_tokens: 1024
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`NVIDIA API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  let result = data.choices[0].message.content.trim();
+  
+  if (result.startsWith('CLARIFICATION_NEEDED:')) {
+    return {
+      needsClarification: true,
+      question: result.replace('CLARIFICATION_NEEDED:', '').trim(),
+      originalQuestion: question
+    };
+  }
+
+  result = result.replace(/```sql\n?/g, '').replace(/```\n?/g, '').trim();
+  
+  if (result.includes('SELECT *')) {
+    result = result.replace(/SELECT \*/gi, `SELECT Id, Name`);
+  }
+
+  return {
+    soql: result,
+    originalQuestion: question,
+    needsClarification: false,
+    detectedObject: detectedObject || null
+  };
+}
 
 app.post('/chat', async (req, res) => {
   console.log('🔍 POST /chat called');
@@ -637,6 +749,12 @@ app.post('/chat', async (req, res) => {
       })
     });
 
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Chat API error:', errorText);
+      throw new Error(`Chat API failed: ${response.status}`);
+    }
+
     const data = await response.json();
     res.json({
       response: data.choices[0].message.content,
@@ -645,7 +763,7 @@ app.post('/chat', async (req, res) => {
 
   } catch (error) {
     console.error('❌ POST /chat error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message, stack: error.stack });
   }
 });
 
