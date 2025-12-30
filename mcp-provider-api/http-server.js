@@ -497,57 +497,77 @@ app.post('/generate-soql', async (req, res) => {
   }
 });
 
-app.post("/summarize", async (req, res) => {
+app.post('/summarize', async (req, res) => {
   try {
-    if (!NVIDIA_API_KEY)
-      return res.status(503).json({ error: "LLM not configured" });
+    if (!NVIDIA_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
+    
+    const { textData, isChunk, isFinal, chunkNumber, totalChunks } = req.body;
+    
+    let systemPrompt;
+    
+    if (isChunk) {
+      // Summarizing individual chunk
+      systemPrompt = `Summarize this news chunk (${chunkNumber}/${totalChunks}) concisely. Return ONLY JSON:
+{"summary": "Key points from this section", "sentiment": "Positive|Neutral|Negative"}`;
+    } else if (isFinal) {
+      // Creating final summary from chunk summaries
+      systemPrompt = `Create a final comprehensive summary from these partial summaries. Return ONLY JSON:
+{"summary": "<ul><li>Key point 1</li><li>Key point 2</li></ul>", "sentiment": "Positive|Neutral|Negative"}
 
-    const { textData } = req.body;
+Combine insights, remove redundancy, highlight most important information.`;
+    } else {
+      // Regular single summary
+      systemPrompt = `Summarize this news. Return ONLY JSON:
+{"summary": "<ul><li>point</li></ul>", "sentiment": "Positive"}`;
+    }
+    
+    console.log(`📝 ${isChunk ? `Chunk ${chunkNumber}/${totalChunks}` : isFinal ? 'Final summary' : 'Single summary'} - ${textData.length} chars`);
 
-    const systemPrompt = `You MUST return ONLY a valid JSON object. No text before or after.
-Format:
-{"summary": "<ul><li>point</li></ul>", "sentiment": "Positive"}
-
-Rules:
-- Start immediately with {
-- No preamble, no explanation
-- Format currency with $
-- Handle nulls as "Not specified"`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
 
     const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${NVIDIA_API_KEY}`,
-        "Content-Type": "application/json",
+        "Authorization": `Bearer ${NVIDIA_API_KEY}`,
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
         model: NVIDIA_MODEL,
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: `Summarize: ${textData}` },
+          { role: "user", content: textData }
         ],
         response_format: { type: "json_object" },
-        temperature: 0.1, // Lower temperature for more consistent formatting
+        temperature: 0.1,
+        max_tokens: isChunk ? 300 : 800
       }),
+      signal: controller.signal
     });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      throw new Error(`NVIDIA API error: ${response.status}`);
+    }
 
     const data = await response.json();
     let content = data.choices[0].message.content.trim();
-
-    // Remove markdown blocks
+    
     content = content.replace(/```json|```/g, "").trim();
-
-    // Extract JSON if there's text before it
     const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      content = jsonMatch[0];
-    }
-
-    res.json(JSON.parse(content));
+    if (jsonMatch) content = jsonMatch[0];
+    
+    console.log('✅ Summary generated');
+    res.json(JSON.parse(content)); 
+    
   } catch (error) {
-    console.error("Summarize error:", error.message);
-    console.error("Raw content:", error);
-    res.status(500).json({ error: error.message });
+    console.error('❌ Summarize error:', error.message);
+    res.status(500).json({ 
+      error: error.message,
+      summary: 'Error generating summary',
+      sentiment: 'Neutral'
+    });
   }
 });
 
