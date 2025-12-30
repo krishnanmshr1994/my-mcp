@@ -497,48 +497,56 @@ app.post('/generate-soql', async (req, res) => {
   }
 });
 
-app.post('/summarize', async (req, res) => {
+app.post("/summarize", async (req, res) => {
   try {
-    if (!NVIDIA_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
-    
+    if (!NVIDIA_API_KEY)
+      return res.status(503).json({ error: "LLM not configured" });
+
     const { textData } = req.body;
-    
-    const systemPrompt = `Summarize Salesforce data. Return ONLY JSON:
-{
-  "summary": "<ul><li>point</li></ul>",
-  "sentiment": "Positive|Neutral|Negative"
-}
+
+    const systemPrompt = `You MUST return ONLY a valid JSON object. No text before or after.
+Format:
+{"summary": "<ul><li>point</li></ul>", "sentiment": "Positive"}
+
+Rules:
+- Start immediately with {
+- No preamble, no explanation
 - Format currency with $
-- Format dates clearly
-- Handle nulls gracefully
-- No markdown blocks`;
+- Handle nulls as "Not specified"`;
 
     const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${NVIDIA_API_KEY}`,
-        "Content-Type": "application/json"
+        Authorization: `Bearer ${NVIDIA_API_KEY}`,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         model: NVIDIA_MODEL,
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: `Summarize: ${textData}` }
+          { role: "user", content: `Summarize: ${textData}` },
         ],
         response_format: { type: "json_object" },
-        temperature: 0.2
-      })
+        temperature: 0.1, // Lower temperature for more consistent formatting
+      }),
     });
 
     const data = await response.json();
     let content = data.choices[0].message.content.trim();
-    
-    if (content.includes("```")) {
-      content = content.replace(/```json|```/g, "").trim();
+
+    // Remove markdown blocks
+    content = content.replace(/```json|```/g, "").trim();
+
+    // Extract JSON if there's text before it
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      content = jsonMatch[0];
     }
-    
-    res.json(JSON.parse(content)); 
+
+    res.json(JSON.parse(content));
   } catch (error) {
+    console.error("Summarize error:", error.message);
+    console.error("Raw content:", error);
     res.status(500).json({ error: error.message });
   }
 });
