@@ -498,77 +498,87 @@ app.post('/generate-soql', async (req, res) => {
 });
 
 app.post('/summarize', async (req, res) => {
-  try {
-    if (!NVIDIA_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
-    
-    const { textData, isChunk, isFinal, chunkNumber, totalChunks } = req.body;
-    
-    let systemPrompt;
-    
-    if (isChunk) {
-      // Summarizing individual chunk
-      systemPrompt = `Summarize this news chunk (${chunkNumber}/${totalChunks}) concisely. Return ONLY JSON:
-{"summary": "Key points from this section", "sentiment": "Positive|Neutral|Negative"}`;
-    } else if (isFinal) {
-      // Creating final summary from chunk summaries
-      systemPrompt = `Create a final comprehensive summary from these partial summaries. Return ONLY JSON:
-{"summary": "<ul><li>Key point 1</li><li>Key point 2</li></ul>", "sentiment": "Positive|Neutral|Negative"}
+    try {
+        if (!NVIDIA_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
 
-Combine insights, remove redundancy, highlight most important information.`;
-    } else {
-      // Regular single summary
-      systemPrompt = `Summarize this news. Return ONLY JSON:
-{"summary": "<ul><li>point</li></ul>", "sentiment": "Positive"}`;
+        const { textData, isChunk, isFinal, chunkNumber, totalChunks } = req.body;
+
+        // 1. Strict JSON Instructions for the LLM
+        const jsonFormatRule = `Return ONLY a valid JSON object. 
+        CRITICAL: Use ONLY double quotes (") for all keys and string values. 
+        Example: {"summary": "text", "sentiment": "Neutral"}`;
+
+        let systemPrompt;
+        if (isChunk) {
+            systemPrompt = `Summarize this news chunk (${chunkNumber}/${totalChunks}) concisely. ${jsonFormatRule}`;
+        } else if (isFinal) {
+            systemPrompt = `Create a final comprehensive summary from these partial summaries. ${jsonFormatRule}
+            Combine insights, remove redundancy, and use <ul><li> tags for the summary.`;
+        } else {
+            systemPrompt = `Summarize this news. ${jsonFormatRule}`;
+        }
+
+        console.log(`📝 Processing: ${isChunk ? `Chunk ${chunkNumber}` : isFinal ? 'Final' : 'Single'}`);
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 45000); // Increased timeout for long summaries
+
+        const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${NVIDIA_API_KEY}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                model: NVIDIA_MODEL,
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: textData }
+                ],
+                response_format: { type: "json_object" },
+                temperature: 0.1
+            }),
+            signal: controller.signal
+        });
+
+        clearTimeout(timeout);
+
+        if (!response.ok) throw new Error(`NVIDIA API error: ${response.status}`);
+
+        const data = await response.json();
+        let content = data.choices[0].message.content.trim();
+
+        // 2. DATA SANITIZATION (The Fix for 'Position 4' Error)
+        // Remove Markdown backticks
+        content = content.replace(/```json|```/g, "").trim();
+
+        // Extract ONLY the JSON object (ignore any preamble text)
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error("No JSON found in LLM response");
+        content = jsonMatch[0];
+
+        // 3. AUTO-CORRECT QUOTES (Safety Layer)
+        // If the LLM used 'key': 'value', this converts it to "key": "value"
+        content = content.replace(/'([^']+)':/g, '"$1":')  // Fix keys
+                        .replace(/:[ ]*'([^']*)'/g, ': "$1"'); // Fix values
+
+        try {
+            const parsedData = JSON.parse(content);
+            console.log('✅ Successfully parsed summary');
+            res.json(parsedData);
+        } catch (parseErr) {
+            console.error('❌ JSON Parse Error on content:', content);
+            throw new Error("LLM response was not valid JSON");
+        }
+
+    } catch (error) {
+        console.error('❌ Summarize error:', error.message);
+        res.status(500).json({
+            error: error.message,
+            summary: 'Error generating summary. Please try a smaller text sample.',
+            sentiment: 'Neutral'
+        });
     }
-    
-    console.log(`📝 ${isChunk ? `Chunk ${chunkNumber}/${totalChunks}` : isFinal ? 'Final summary' : 'Single summary'} - ${textData.length} chars`);
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-
-    const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${NVIDIA_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: NVIDIA_MODEL,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: textData }
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.1,
-        max_tokens: isChunk ? 300 : 800
-      }),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeout);
-
-    if (!response.ok) {
-      throw new Error(`NVIDIA API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    let content = data.choices[0].message.content.trim();
-    
-    content = content.replace(/```json|```/g, "").trim();
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) content = jsonMatch[0];
-    
-    console.log('✅ Summary generated');
-    res.json(JSON.parse(content)); 
-    
-  } catch (error) {
-    console.error('❌ Summarize error:', error.message);
-    res.status(500).json({ 
-      error: error.message,
-      summary: 'Error generating summary',
-      sentiment: 'Neutral'
-    });
-  }
 });
 
 app.post('/smart-query', async (req, res) => {
