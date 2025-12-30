@@ -503,25 +503,24 @@ app.post('/summarize', async (req, res) => {
 
         const { textData, isChunk, isFinal, chunkNumber, totalChunks } = req.body;
 
-        // 1. Strict JSON Instructions for the LLM
-        const jsonFormatRule = `Return ONLY a valid JSON object. 
-        CRITICAL: Use ONLY double quotes (") for all keys and string values. 
-        Example: {"summary": "text", "sentiment": "Neutral"}`;
+        // 1. Define the exact Schema we want (NVIDIA NIM Structured Output)
+        const jsonSchema = {
+            type: "object",
+            properties: {
+                summary: { type: "string" },
+                sentiment: { type: "string", enum: ["Positive", "Neutral", "Negative"] }
+            },
+            required: ["summary", "sentiment"]
+        };
 
         let systemPrompt;
         if (isChunk) {
-            systemPrompt = `Summarize this news chunk (${chunkNumber}/${totalChunks}) concisely. ${jsonFormatRule}`;
+            systemPrompt = `Summarize news chunk ${chunkNumber}/${totalChunks}. Provide key points only.`;
         } else if (isFinal) {
-            systemPrompt = `Create a final comprehensive summary from these partial summaries. ${jsonFormatRule}
-            Combine insights, remove redundancy, and use <ul><li> tags for the summary.`;
+            systemPrompt = `Create a final executive summary using <ul><li> tags from these partial summaries.`;
         } else {
-            systemPrompt = `Summarize this news. ${jsonFormatRule}`;
+            systemPrompt = `Summarize this news article concisely.`;
         }
-
-        console.log(`📝 Processing: ${isChunk ? `Chunk ${chunkNumber}` : isFinal ? 'Final' : 'Single'}`);
-
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 45000); // Increased timeout for long summaries
 
         const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
             method: "POST",
@@ -535,49 +534,31 @@ app.post('/summarize', async (req, res) => {
                     { role: "system", content: systemPrompt },
                     { role: "user", content: textData }
                 ],
-                response_format: { type: "json_object" },
+                // THE SECRET SAUCE: Tell NVIDIA exactly what JSON structure to follow
+                response_format: { 
+                    type: "json_object",
+                    schema: jsonSchema 
+                },
                 temperature: 0.1
-            }),
-            signal: controller.signal
+            })
         });
 
-        clearTimeout(timeout);
+        if (!response.ok) throw new Error(`NVIDIA Error: ${response.status}`);
 
-        if (!response.ok) throw new Error(`NVIDIA API error: ${response.status}`);
+        const result = await response.json();
+        let content = result.choices[0].message.content.trim();
 
-        const data = await response.json();
-        let content = data.choices[0].message.content.trim();
-
-        // 2. DATA SANITIZATION (The Fix for 'Position 4' Error)
-        // Remove Markdown backticks
+        // Safety: Sometimes NIM still wraps in markdown blocks despite the schema
         content = content.replace(/```json|```/g, "").trim();
 
-        // Extract ONLY the JSON object (ignore any preamble text)
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) throw new Error("No JSON found in LLM response");
-        content = jsonMatch[0];
-
-        // 3. AUTO-CORRECT QUOTES (Safety Layer)
-        // If the LLM used 'key': 'value', this converts it to "key": "value"
-        content = content.replace(/'([^']+)':/g, '"$1":')  // Fix keys
-                        .replace(/:[ ]*'([^']*)'/g, ': "$1"'); // Fix values
-
-        try {
-            const parsedData = JSON.parse(content);
-            console.log('✅ Successfully parsed summary');
-            res.json(parsedData);
-        } catch (parseErr) {
-            console.error('❌ JSON Parse Error on content:', content);
-            throw new Error("LLM response was not valid JSON");
-        }
+        // Final Parse
+        const finalJson = JSON.parse(content);
+        console.log(`✅ ${isFinal ? 'Final' : 'Chunk'} summary generated.`);
+        res.json(finalJson);
 
     } catch (error) {
-        console.error('❌ Summarize error:', error.message);
-        res.status(500).json({
-            error: error.message,
-            summary: 'Error generating summary. Please try a smaller text sample.',
-            sentiment: 'Neutral'
-        });
+        console.error('❌ Server Error:', error.message);
+        res.status(500).json({ summary: "Error processing text", sentiment: "Neutral" });
     }
 });
 
