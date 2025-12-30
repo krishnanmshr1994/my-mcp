@@ -531,29 +531,47 @@ Otherwise, respond ONLY with the valid SOQL query (no markdown, no explanations,
   }
 });
 
-// Add this to your existing http-server.js
+// Logic for summary
 app.post('/summarize', async (req, res) => {
     try {
+        console.log('🔍 POST /summary called');
+        if (!NVIDIA_API_KEY) {
+          return res.status(503).json({ error: 'LLM not configured' });
+        }
         const { textData } = req.body;
         
-        const response = await fetch(`${process.env.NVIDIA_API_BASE}/chat/completions`, {
+        // Fix: Use the local constants (NVIDIA_API_BASE) instead of process.env
+        const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
             method: "POST",
             headers: {
-                "Authorization": `Bearer ${process.env.NVIDIA_API_KEY}`,
+                "Authorization": `Bearer ${NVIDIA_API_KEY}`,
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                model: process.env.NVIDIA_MODEL || 'meta/llama-3.3-70b-instruct',
+                model: NVIDIA_MODEL,
                 messages: [
-                    { role: "system", content: "Summarize the following news concisely for a business user." },
-                    { role: "user", content: textData }
-                ]
+                    {
+                        role: "system",
+                        content: "You are a business analyst. Summarize the following news into 3-5 concise bullet points. Focus on financial and strategic updates. Use a professional tone."
+                    },
+                    {
+                        role: "user",
+                        content: `Format the following news as a bulleted list:\n\n${textData}`
+                    }
+                ],
+                temperature: 0.5
             })
-        });
 
         const data = await response.json();
+        
+        if (data.error) {
+            console.error('NVIDIA API Error:', data.error);
+            return res.status(500).json({ error: data.error });
+        }
+
         res.json(data);
     } catch (error) {
+        console.error('Summarize Error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
@@ -585,7 +603,7 @@ app.post('/smart-query', async (req, res) => {
           question,
           soql: null,
           data: { records: [], totalSize: 0 },
-          explanation: 'The previous query returned no results, so there is no data to perform calculations on.',
+          Explanation: 'The previous query returned no results, so there is no data to perform calculations on.',
           recordCount: 0,
           response: 'No data available from previous query to calculate.',
           calculatedByLLM: true
