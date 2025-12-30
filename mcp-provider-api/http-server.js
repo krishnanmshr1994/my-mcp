@@ -534,13 +534,13 @@ Otherwise, respond ONLY with the valid SOQL query (no markdown, no explanations,
 // Logic for summary
 app.post('/summarize', async (req, res) => {
     try {
-        console.log('🔍 POST /summary called');
+        console.log('🔍 POST /summarize called');
         if (!NVIDIA_API_KEY) {
-          return res.status(503).json({ error: 'LLM not configured' });
+            return res.status(503).json({ error: 'LLM not configured' });
         }
+
         const { textData } = req.body;
-        
-        // Fix: Use the local constants (NVIDIA_API_BASE) instead of process.env
+
         const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
             method: "POST",
             headers: {
@@ -561,6 +561,7 @@ app.post('/summarize', async (req, res) => {
                 ],
                 temperature: 0.5
             })
+        }); // Added missing closing parenthesis and brace here
 
         const data = await response.json();
         
