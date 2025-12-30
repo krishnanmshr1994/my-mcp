@@ -218,3 +218,22 @@
         padding: 16px;
     }
 }
+/* Specifically for the news input inside the tile */
+.news-tile {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 200px;
+}
+
+.news-tile lightning-input {
+    --slds-c-input-spacing-vertical-start: 8px;
+    --slds-c-input-spacing-vertical-end: 8px;
+    width: 100%;
+}
+
+/* Ensure the News component area is clean */
+.is-news-active-container {
+    padding: 16px;
+    background: #ffffff;
+}

@@ -1,22 +1,32 @@
 <template>
     <lightning-card title="AI Assistant" icon-name="standard:bot">
         <div class="main-container">
-            <template if:false={isChatActive}>
+            
+            <template if:false={viewMode}>
                 <div class="selection-dialogue slds-p-around_medium">
                     <h2 class="slds-text-heading_medium slds-m-bottom_large slds-text-align_center">How can I assist you?</h2>
                     <lightning-layout multiple-rows="true">
-                        <lightning-layout-item size="12" small-device-size="6" padding="around-small">
+                        <lightning-layout-item size="12" small-device-size="4" padding="around-small">
                             <div class="feature-card" onclick={handleSelectQuery}>
                                 <lightning-icon icon-name="utility:table" size="medium"></lightning-icon>
                                 <h3>Smart Query</h3>
-                                <p>Generate tables from natural language.</p>
+                                <p>Natural language to SOQL.</p>
                             </div>
                         </lightning-layout-item>
-                        <lightning-layout-item size="12" small-device-size="6" padding="around-small">
+
+                        <lightning-layout-item size="12" small-device-size="4" padding="around-small">
                             <div class="feature-card" onclick={handleSelectChat}>
                                 <lightning-icon icon-name="utility:chat" size="medium"></lightning-icon>
                                 <h3>General Chat</h3>
-                                <p>Ask questions about your data.</p>
+                                <p>Ask anything about data.</p>
+                            </div>
+                        </lightning-layout-item>
+
+                        <lightning-layout-item size="12" small-device-size="4" padding="around-small">
+                            <div class="feature-card" onclick={handleSelectNews}>
+                                <lightning-icon icon-name="utility:news" size="medium"></lightning-icon>
+                                <h3>Account News</h3>
+                                <p>Summarized industry news.</p>
                             </div>
                         </lightning-layout-item>
                     </lightning-layout>
@@ -28,106 +38,83 @@
                     <div class="chat-header slds-p-around_x-small slds-border_bottom">
                         <lightning-button-icon icon-name="utility:back" variant="bare" onclick={handleBack}></lightning-button-icon>
                         <span class="slds-m-left_small slds-text-title_caps">{selectedFeatureLabel}</span>
-                        <template if:true={hasConversationHistory}>
-                            <lightning-button-icon 
-                                icon-name="utility:refresh" 
-                                variant="bare" 
-                                alternative-text="Clear context"
-                                title="Clear conversation context"
-                                class="slds-m-left_small"
-                                onclick={handleClearContext}>
-                            </lightning-button-icon>
-                        </template>
                     </div>
 
                     <div class="message-area">
                         <template for:each={messages} for:item="msg">
                             <div key={msg.id} class={msg.containerClass}>
                                 <div class={msg.bubbleClass}>
-                                    <div class="message-text">
-                                        <lightning-formatted-rich-text value={msg.text}></lightning-formatted-rich-text>
-                                    </div>
+                                    <lightning-formatted-rich-text value={msg.text}></lightning-formatted-rich-text>
                                     
-                                    <!-- Explanation toggle button - only show if hasExplanation is true -->
                                     <template if:true={msg.hasExplanation}>
-                                        <div class="explanation-section slds-m-top_x-small">
-                                            <button class="explanation-toggle" onclick={handleToggleExplanation} data-id={msg.id}>
-                                                {msg.toggleLabel}
-                                            </button>
-                                            <!-- Explanation text - only show if showExplanation is true -->
-                                            <template if:true={msg.showExplanation}>
-                                                <div class="explanation-text slds-m-top_x-small">
-                                                    {msg.explanation}
-                                                </div>
-                                            </template>
-                                        </div>
+                                        <button class="explanation-toggle" onclick={handleToggleExplanation} data-id={msg.id}>{msg.toggleLabel}</button>
+                                        <template if:true={msg.showExplanation}>
+                                            <div class="explanation-text">{msg.explanation}</div>
+                                        </template>
                                     </template>
 
-                                    <!-- Records display - only show if hasRecords is true -->
                                     <template if:true={msg.hasRecords}>
-                                        <div class="results-container slds-m-top_small">
-                                            <!-- Desktop/Tablet: Show datatable if NOT mobile -->
-                                            <template if:false={msg.isMobile}>
-                                                <div class="table-container">
-                                                    <lightning-datatable
-                                                        key-field="Id"
-                                                        data={msg.rawRecords}
-                                                        columns={msg.columns}
-                                                        hide-checkbox-column>
-                                                    </lightning-datatable>
-                                                </div>
+                                        <div class="results-container">
+                                            <template if:false={isMobile}>
+                                                <lightning-datatable key-field="Id" data={msg.rawRecords} columns={msg.columns} hide-checkbox-column></lightning-datatable>
                                             </template>
-                                            
-                                            <!-- Mobile: Show cards if IS mobile -->
-                                            <template if:true={msg.isMobile}>
-                                                <div class="cards-container">
-                                                    <template for:each={msg.records} for:item="rec">
-                                                        <div key={rec.Id} class="mobile-record-card">
-                                                            <template for:each={rec.fields} for:item="fld">
-                                                                <div key={fld.name} class="card-row">
-                                                                    <span class="card-label">{fld.label}:</span>
-                                                                    <span class="card-value">{fld.value}</span>
-                                                                </div>
-                                                            </template>
-                                                        </div>
-                                                    </template>
-                                                </div>
+                                            <template if:true={isMobile}>
+                                                <template for:each={msg.records} for:item="rec">
+                                                    <div key={rec.Id} class="mobile-record-card">
+                                                        <template for:each={rec.fields} for:item="fld">
+                                                            <div key={fld.name} class="card-row">
+                                                                <span class="card-label">{fld.label}:</span>
+                                                                <span class="card-value">{fld.value}</span>
+                                                            </div>
+                                                        </template>
+                                                    </div>
+                                                </template>
                                             </template>
                                         </div>
                                     </template>
                                 </div>
                             </div>
                         </template>
-                        
                         <template if:true={isLoading}>
-                            <div class="bot-container">
-                                <div class="bot-bubble">
-                                    <lightning-spinner size="small" variant="brand"></lightning-spinner>
-                                </div>
-                            </div>
+                            <div class="bot-container"><div class="bot-bubble"><lightning-spinner size="small" variant="brand"></lightning-spinner></div></div>
                         </template>
                     </div>
 
                     <div class="input-footer slds-p-around_small">
                         <div class="input-wrapper">
-                            <lightning-input 
-                                type="text" 
-                                variant="label-hidden" 
-                                placeholder="Ask me..." 
-                                value={userInput} 
-                                onchange={handleInputChange} 
-                                onkeyup={handleEnter}>
-                            </lightning-input>
-                            <lightning-button-icon 
-                                icon-name="utility:send" 
-                                variant="brand" 
-                                onclick={handleSendMessage}
-                                disabled={isLoading}>
-                            </lightning-button-icon>
+                            <lightning-input type="text" variant="label-hidden" placeholder="Ask me..." value={userInput} onchange={handleInputChange} onkeyup={handleEnter}></lightning-input>
+                            <lightning-button-icon icon-name="utility:send" variant="brand" onclick={handleSendMessage} disabled={isLoading}></lightning-button-icon>
                         </div>
                     </div>
                 </div>
             </template>
+
+            <template if:true={isNewsActive}>
+                <div class="chat-interface">
+                    <div class="chat-header slds-p-around_x-small slds-border_bottom slds-grid slds-grid_vertical-align-center slds-grid_align-spread">
+                        <div>
+                            <lightning-button-icon icon-name="utility:back" variant="bare" onclick={handleBack}></lightning-button-icon>
+                            <span class="slds-m-left_small slds-text-title_caps">Account News</span>
+                        </div>
+                        <template if:true={newsConfirmed}>
+                            <lightning-button label="Change Account" variant="base" icon-name="utility:search" onclick={handleNewSearch}></lightning-button>
+                        </template>
+                    </div>
+                    
+                    <div class="message-area" style="background:white; align-items:center; justify-content:center;">
+                        <template if:false={newsConfirmed}>
+                            <div class="slds-box slds-theme_default slds-size_1-of-1 slds-medium-size_2-of-3">
+                                <lightning-input label="Enter company name for news" placeholder="e.g. Microsoft" value={newsAccountName} onchange={handleNewsNameChange}></lightning-input>
+                                <lightning-button label="Fetch News" variant="brand" class="slds-m-top_small" onclick={handleConfirmNews} disabled={isNewsDisabled}></lightning-button>
+                            </div>
+                        </template>
+                        <template if:true={newsConfirmed}>
+                            <c-news account-name={newsAccountName}></c-news>
+                        </template>
+                    </div>
+                </div>
+            </template>
+
         </div>
     </lightning-card>
 </template>
