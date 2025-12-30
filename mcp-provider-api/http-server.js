@@ -461,6 +461,13 @@ CRITICAL SOQL RULES:
    - ALWAYS add ORDER BY clause: ORDER BY Amount DESC
    - Use LIMIT for "top N": LIMIT 5
    - Example: SELECT Id, Name, Amount FROM Opportunity WHERE Amount > 0 ORDER BY Amount DESC LIMIT 5
+7. For date filters, use LAST_N_DAYS, THIS_MONTH, etc. (e.g., WHERE CreatedDate = LAST_N_DAYS:30)
+8. For text searches, use LIKE with % wildcards (e.g., WHERE Name LIKE '%Acme%')
+9. For relationships, use dot notation (e.g., Account.Name, Owner.Email)
+10. USER CONTEXT:
+   - The Current User's ID is: ${currentUserId}
+   - NEVER use bind variables like ':userId' or ':currentUserId'.
+   - If the user says "me", "my", or "assigned to me", use OwnerId = '${currentUserId}
 
 ${schemaText}${objectFieldsList}
 
@@ -561,8 +568,11 @@ app.post('/summarize', async (req, res) => {
           const data = await response.json();
           let content = data.choices[0].message.content.trim();
           console.log(`Raw Summary Response: ${content}`);
-          // FIX: Remove any markdown backticks if present
-          content = content.replace(/```json|```/g, "").trim();
+          // --- THE FIX: SANITIZE THE STRING ---
+          // This removes ```json or ``` blocks that cause the "Position 4" error
+          if (content.includes("```")) {
+              content = content.replace(/```json|```/g, "").trim();
+          }
           console.log(`Summary Response: ${content}`);
           // Send as a pure object to the LWC
           res.json(JSON.parse(content)); 
@@ -842,40 +852,42 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
   const prompt = `You are a Salesforce SOQL expert. Generate valid SOQL queries following these STRICT RULES:
 
 CRITICAL SOQL RULES:
-1. NEVER use "SELECT *" - SOQL does NOT support this syntax
-2. ALWAYS explicitly list field names: SELECT Id, Name, Field1__c FROM Object
-3. Custom objects end with __c (e.g., Barcode_Config__c)
-4. Custom fields end with __c (e.g., Custom_Field__c)
-5. Use EXACT API names from the schema provided
+1. NEVER use "SELECT *" - SOQL does NOT support this syntax.
+2. ALWAYS explicitly list field names: SELECT Id, Name, Field1__c FROM Object.
+3. Custom objects end with __c (e.g., Barcode_Config__c).
+4. Custom fields end with __c (e.g., Custom_Field__c).
+5. Use EXACT API names from the schema provided.
 6. For "top N" queries with amounts/numbers:
    - ALWAYS add WHERE clause to exclude null/zero values: WHERE Amount > 0
    - ALWAYS add ORDER BY clause: ORDER BY Amount DESC
    - Use LIMIT for "top N": LIMIT 5
 7. CONTEXT AWARENESS:
-   - If user references previous results with "above", "those", "these", use the same WHERE conditions
-   - If user asks about RELATED objects (e.g., "related accounts", "contacts from those opportunities"):
-     * Use subqueries: SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE [previous conditions])
-     * Or use relationship fields from the previous object
-   - If user asks about a DIFFERENT unrelated object, treat it as a NEW query
-   - NOTE: Aggregations/calculations on LIMITED results will be handled by the system using LLM, not SOQL
+   - If user references previous results with "above", "those", "these", use the same WHERE conditions.
+   - If user asks about RELATED objects:
+     * Use subqueries: SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE [prev_conditions])
+     * Or use relationship fields from the previous object.
+   - If user asks about a DIFFERENT unrelated object, treat it as a NEW query.
+   - NOTE: Aggregations on LIMITED results are handled by LLM, not SOQL.
 8. RELATIONSHIP QUERIES:
-   - Opportunities have AccountId (lookup to Account)
-   - Contacts have AccountId (lookup to Account)
-   - Use subqueries for related records across objects
+   - Opportunities and Contacts have AccountId (lookup to Account).
+   - Use subqueries for related records across objects.
+   - For custom relationship fields, use __r when traversing (e.g., Obj__r.Field__c).
+
+USER & DATE CONTEXT (IMPORTANT):
+- Current User ID: '${currentUserId}'
+- Today's Date: ${new Date().toISOString().split('T')[0]}
+- BIND VARIABLES: NEVER use colons (e.g., :userId). Use the hardcoded string 'currentUserId'.
+- USER FILTERING: For "me", "my", or "assigned to me", use OwnerId = 'currentUserId'.
+- DATE FILTERING: Use Salesforce literals (YESTERDAY, THIS_MONTH) or 'YYYY-MM-DD'.
+- SEARCHING: Use LIKE '%term%' for name-based searches to avoid empty exact matches.
 
 ${schemaText}${objectFieldsList}${conversationContext}
 
 Current Question: ${question}
 
-${isFieldsQuery ? `
-This is a request to see ALL fields of an object.
-Generate a SELECT query that includes ALL the fields listed above.
-Example format: SELECT Id, Field1__c, Field2__c, Field3__c FROM ${detectedObject}
-` : ''}
+${isFieldsQuery ? `Request for ALL fields. Format: SELECT [All Listed Fields] FROM ${detectedObject}` : ''}
 
-If you need clarification about which object to use, respond: CLARIFICATION_NEEDED: [your question]
-
-Otherwise, respond ONLY with the valid SOQL query (no markdown, no explanations, no SELECT *).`;
+Respond ONLY with the valid SOQL query. No markdown, no explanations, no SELECT *`;
 
   const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
     method: 'POST',
