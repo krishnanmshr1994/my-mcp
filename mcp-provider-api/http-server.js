@@ -458,11 +458,17 @@ app.post('/generate-soql', async (req, res) => {
     const prompt = `You are a Salesforce SOQL expert. Generate valid SOQL queries following these STRICT RULES:
 
 CRITICAL SOQL RULES:
+CRITICAL SOQL RULES:
 1. NEVER use "SELECT *" - SOQL does NOT support this syntax
 2. ALWAYS explicitly list field names: SELECT Id, Name, Field1__c FROM Object
 3. Custom objects end with __c (e.g., Barcode_Config__c)
 4. Custom fields end with __c (e.g., Custom_Field__c)
 5. Use EXACT API names from the schema provided
+6. For "top N" queries with amounts/numbers:
+   - ALWAYS add WHERE clause to exclude null/zero values: WHERE Amount > 0 OR WHERE Amount != null
+   - ALWAYS add ORDER BY clause: ORDER BY Amount DESC
+   - Use LIMIT for "top N": LIMIT 5
+   - Example: SELECT Id, Name, Amount FROM Opportunity WHERE Amount > 0 ORDER BY Amount DESC LIMIT 5
 
 ${schemaText}${objectFieldsList}
 
