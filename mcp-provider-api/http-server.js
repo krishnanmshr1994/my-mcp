@@ -543,6 +543,95 @@ app.post('/smart-query', async (req, res) => {
       return res.status(400).json({ error: 'question is required' });
     }
 
+    // Check if this is an aggregation/calculation on previous results
+    const isAggregationOnPrevious = /\b(average|avg|sum|total|count|max|min|calculate|compute)\b/i.test(question) &&
+                                     /\b(above|those|these|the previous|that|them)\b/i.test(question) &&
+                                     conversationHistory.length > 0;
+
+    if (isAggregationOnPrevious) {
+      // Get the last query results from conversation history
+      const lastConversation = conversationHistory[conversationHistory.length - 1];
+      
+      // Edge case: No results in previous query
+      if (!lastConversation.results || lastConversation.results.length === 0) {
+        return res.json({
+          question,
+          soql: null,
+          data: { records: [], totalSize: 0 },
+          explanation: 'The previous query returned no results, so there is no data to perform calculations on.',
+          recordCount: 0,
+          response: 'No data available from previous query to calculate.',
+          calculatedByLLM: true
+        });
+      }
+
+      // Edge case: Too much data (>100 records) - limit what we send to LLM
+      const resultsToAnalyze = lastConversation.results.slice(0, 100);
+      const isTruncated = lastConversation.results.length > 100;
+      
+      console.log('💡 Detected aggregation on previous results - using LLM calculation instead of SOQL');
+      console.log(`   Analyzing ${resultsToAnalyze.length} records${isTruncated ? ` (truncated from ${lastConversation.results.length})` : ''}`);
+      
+      // Ask LLM to perform the calculation on the previous results
+      const calcPrompt = `You are analyzing Salesforce data. The user previously asked: "${lastConversation.question}"
+
+This returned ${lastConversation.recordCount} records${isTruncated ? ` (showing first ${resultsToAnalyze.length} for analysis)` : ''}.
+
+Sample of the data:
+${JSON.stringify(resultsToAnalyze.slice(0, 10), null, 2)}
+
+Now the user asks: "${question}"
+
+Please:
+1. Identify which field(s) to perform the calculation on (look for numeric fields like Amount, Total, Count, etc.)
+2. Perform the requested calculation/aggregation${isTruncated ? ' on ALL ' + lastConversation.recordCount + ' records (extrapolate if needed)' : ''}
+3. Show your reasoning
+4. Provide the final answer clearly
+
+If the question is ambiguous about which field to use, state your assumption.
+
+Format your response as:
+FIELD USED: [field name]
+CALCULATION: [show the calculation or method]
+RESULT: [the final number/answer]
+EXPLANATION: [brief explanation]`;
+
+      const llmRes = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${NVIDIA_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: NVIDIA_MODEL,
+          messages: [{ role: 'user', content: calcPrompt }],
+          temperature: 0.2,
+          max_tokens: 1024
+        })
+      });
+
+      if (!llmRes.ok) {
+        throw new Error(`LLM calculation failed: ${llmRes.status}`);
+      }
+
+      const llmData = await llmRes.json();
+      const llmResponse = llmData.choices[0].message.content;
+
+      // Extract the result
+      const resultMatch = llmResponse.match(/RESULT:\s*([^\n]+)/i);
+      const result = resultMatch ? resultMatch[1].trim() : 'See explanation below';
+
+      return res.json({
+        question,
+        soql: null, // No SOQL query needed
+        data: { records: [], totalSize: 0 },
+        explanation: llmResponse,
+        recordCount: 0,
+        response: `Result: ${result}`,
+        calculatedByLLM: true
+      });
+    }
+
     // Step 1: Generate SOQL with context
     console.log('📝 Step 1: Generating SOQL with context...');
     console.log('📜 Conversation history:', conversationHistory.length, 'messages');
@@ -701,11 +790,11 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
     });
     conversationContext += `IMPORTANT: The user is referring to the LAST query above (Object: ${previousObject}).\n`;
     conversationContext += 'Use the SAME WHERE clause and conditions from that query when appropriate.\n';
+    conversationContext += 'NOTE: For aggregations/calculations on previous LIMITED results (queries with LIMIT), the system will use LLM to calculate instead of SOQL.\n';
     conversationContext += 'If the user asks about RELATED objects (e.g., "related accounts", "contacts from those opportunities"):\n';
     conversationContext += '  - Use relationship queries or lookup fields to connect to the previous results\n';
-    conversationContext += '  - Example: If previous was Opportunity, and user asks "related accounts", use: SELECT Id, Name, AccountId FROM Opportunity WHERE Amount > 0 to get Account IDs\n';
-    conversationContext += '  - Or use: SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE Amount > 0)\n';
-    conversationContext += 'For aggregations on previous results (AVG, SUM, COUNT, MAX, MIN), use the same WHERE clause.\n\n';
+    conversationContext += '  - Example: If previous was Opportunity, and user asks "related accounts":\n';
+    conversationContext += '    Use: SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE Amount > 0)\n\n';
   } else if (conversationHistory.length > 0 && isNewQuery) {
     // User is asking about a different object - this is a new query
     conversationContext = '\n\nNOTE: This appears to be a NEW question about a different object than the previous query. Generate a fresh SOQL query.\n\n';
@@ -729,6 +818,7 @@ CRITICAL SOQL RULES:
      * Use subqueries: SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE [previous conditions])
      * Or use relationship fields from the previous object
    - If user asks about a DIFFERENT unrelated object, treat it as a NEW query
+   - NOTE: Aggregations/calculations on LIMITED results will be handled by the system using LLM, not SOQL
 8. RELATIONSHIP QUERIES:
    - Opportunities have AccountId (lookup to Account)
    - Contacts have AccountId (lookup to Account)

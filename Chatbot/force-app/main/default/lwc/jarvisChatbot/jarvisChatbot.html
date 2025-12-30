@@ -16,7 +16,7 @@
                             <div class="feature-card" onclick={handleSelectChat}>
                                 <lightning-icon icon-name="utility:chat" size="medium"></lightning-icon>
                                 <h3>General Chat</h3>
-                                <p>Ask any general question.</p>
+                                <p>Ask questions about your data.</p>
                             </div>
                         </lightning-layout-item>
                     </lightning-layout>
@@ -28,49 +28,71 @@
                     <div class="chat-header slds-p-around_x-small slds-border_bottom">
                         <lightning-button-icon icon-name="utility:back" variant="bare" onclick={handleBack}></lightning-button-icon>
                         <span class="slds-m-left_small slds-text-title_caps">{selectedFeatureLabel}</span>
+                        <template if:true={hasConversationHistory}>
+                            <lightning-button-icon 
+                                icon-name="utility:refresh" 
+                                variant="bare" 
+                                alternative-text="Clear context"
+                                title="Clear conversation context"
+                                class="slds-m-left_small"
+                                onclick={handleClearContext}>
+                            </lightning-button-icon>
+                        </template>
                     </div>
 
                     <div class="message-area">
                         <template for:each={messages} for:item="msg">
                             <div key={msg.id} class={msg.containerClass}>
                                 <div class={msg.bubbleClass}>
-                                    <lightning-formatted-rich-text value={msg.text}></lightning-formatted-rich-text>
+                                    <div class="message-text">
+                                        <lightning-formatted-rich-text value={msg.text}></lightning-formatted-rich-text>
+                                    </div>
                                     
+                                    <!-- Explanation toggle button - only show if hasExplanation is true -->
                                     <template if:true={msg.hasExplanation}>
-                                        <div class="slds-m-top_xx-small">
+                                        <div class="explanation-section slds-m-top_x-small">
                                             <button class="explanation-toggle" onclick={handleToggleExplanation} data-id={msg.id}>
                                                 {msg.toggleLabel}
                                             </button>
+                                            <!-- Explanation text - only show if showExplanation is true -->
                                             <template if:true={msg.showExplanation}>
-                                                <div class="explanation-text slds-m-top_xx-small">
+                                                <div class="explanation-text slds-m-top_x-small">
                                                     {msg.explanation}
                                                 </div>
                                             </template>
                                         </div>
                                     </template>
 
+                                    <!-- Records display - only show if hasRecords is true -->
                                     <template if:true={msg.hasRecords}>
                                         <div class="results-container slds-m-top_small">
-                                            <div class="desktop-view">
-                                                <lightning-datatable
-                                                    key-field="Id"
-                                                    data={msg.rawRecords}
-                                                    columns={msg.columns}
-                                                    hide-checkbox-column>
-                                                </lightning-datatable>
-                                            </div>
-                                            <div class="mobile-view">
-                                                <template for:each={msg.records} for:item="rec">
-                                                    <div key={rec.Id} class="mobile-record-card">
-                                                        <template for:each={rec.fields} for:item="fld">
-                                                            <div key={fld.name} class="card-row">
-                                                                <span class="card-label">{fld.label}:</span>
-                                                                <span class="card-value">{fld.value}</span>
-                                                            </div>
-                                                        </template>
-                                                    </div>
-                                                </template>
-                                            </div>
+                                            <!-- Desktop/Tablet: Show datatable if NOT mobile -->
+                                            <template if:false={msg.isMobile}>
+                                                <div class="table-container">
+                                                    <lightning-datatable
+                                                        key-field="Id"
+                                                        data={msg.rawRecords}
+                                                        columns={msg.columns}
+                                                        hide-checkbox-column>
+                                                    </lightning-datatable>
+                                                </div>
+                                            </template>
+                                            
+                                            <!-- Mobile: Show cards if IS mobile -->
+                                            <template if:true={msg.isMobile}>
+                                                <div class="cards-container">
+                                                    <template for:each={msg.records} for:item="rec">
+                                                        <div key={rec.Id} class="mobile-record-card">
+                                                            <template for:each={rec.fields} for:item="fld">
+                                                                <div key={fld.name} class="card-row">
+                                                                    <span class="card-label">{fld.label}:</span>
+                                                                    <span class="card-value">{fld.value}</span>
+                                                                </div>
+                                                            </template>
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                            </template>
                                         </div>
                                     </template>
                                 </div>
@@ -99,7 +121,8 @@
                             <lightning-button-icon 
                                 icon-name="utility:send" 
                                 variant="brand" 
-                                onclick={handleSendMessage}>
+                                onclick={handleSendMessage}
+                                disabled={isLoading}>
                             </lightning-button-icon>
                         </div>
                     </div>

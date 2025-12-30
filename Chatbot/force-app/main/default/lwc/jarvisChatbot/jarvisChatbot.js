@@ -16,6 +16,10 @@ export default class JarvisChatbot extends LightningElement {
         console.log('Is Mobile:', this.isMobile);
     }
 
+    get hasConversationHistory() {
+        return this.conversationHistory.length > 0;
+    }
+
     detectMobile() {
         // Check for Salesforce mobile app
         const userAgent = navigator.userAgent || navigator.vendor || window.opera;
@@ -52,6 +56,21 @@ export default class JarvisChatbot extends LightningElement {
         this.messages = [];
         this.conversationHistory = []; // Clear history when going back
         this.userInput = '';
+    }
+
+    handleClearContext() {
+        this.conversationHistory = [];
+        this.messages = [...this.messages, {
+            id: `system-${Date.now()}`,
+            text: 'Conversation context cleared. Starting fresh!',
+            containerClass: 'bot-container',
+            bubbleClass: 'bot-bubble',
+            hasExplanation: false,
+            hasRecords: false,
+            showExplanation: false,
+            isMobile: this.isMobile
+        }];
+        this.scrollToBottom();
     }
     
     handleInputChange(event) { 
@@ -224,20 +243,25 @@ export default class JarvisChatbot extends LightningElement {
             
             // Add to conversation history for Smart Query context
             if (endpoint === '/smart-query' && data.soql) {
-                this.conversationHistory = [...this.conversationHistory, {
+                // Only store queries that returned actual data (not calculations)
+                const historyEntry = {
                     question: userText,
                     soql: data.soql,
                     recordCount: data.recordCount || 0,
-                    results: rawRecords || [] // Store actual results for LLM calculations
-                }];
+                    results: rawRecords || [], // Store actual results for LLM calculations
+                    timestamp: Date.now()
+                };
                 
-                // Keep only last 5 conversations to avoid token limits
-                if (this.conversationHistory.length > 5) {
-                    this.conversationHistory = this.conversationHistory.slice(-5);
+                this.conversationHistory = [...this.conversationHistory, historyEntry];
+                
+                // Keep only last 3 conversations to avoid confusion and token limits
+                if (this.conversationHistory.length > 3) {
+                    this.conversationHistory = this.conversationHistory.slice(-3);
                 }
             } else if (endpoint === '/smart-query' && data.calculatedByLLM) {
-                // For LLM-calculated results, don't add to history as it doesn't have new data
-                console.log('Result calculated by LLM, not adding to history');
+                // For LLM-calculated results, don't add to history as it doesn't query new data
+                // But we could note that a calculation was performed
+                console.log('Result calculated by LLM from previous data');
             }
             
         } catch (e) { 
