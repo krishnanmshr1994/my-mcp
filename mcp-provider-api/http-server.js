@@ -392,6 +392,7 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
   let previousObject = null;
   let previousLimit = null;
   let previousWhereClause = null;
+  let previousRecordIds = [];
   
   if (conversationHistory.length > 0) {
     const lastQuery = conversationHistory[conversationHistory.length - 1];
@@ -408,6 +409,14 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
     const whereMatch = lastQuery.soql.match(/WHERE\s+(.+?)(?:ORDER BY|LIMIT|$)/i);
     if (whereMatch) {
       previousWhereClause = whereMatch[1].trim();
+    }
+    
+    // Extract actual record IDs from previous results
+    if (lastQuery.results && Array.isArray(lastQuery.results)) {
+      previousRecordIds = lastQuery.results
+        .filter(r => r.Id)
+        .map(r => r.Id)
+        .slice(0, 200); // Limit to 200 IDs to avoid query length issues
     }
   }
   
@@ -449,7 +458,22 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
           conversationContext += `- ⚠️ USE THIS EXACT ID: ${idInWhere[1]}\n`;
         }
       }
-      conversationContext += `- ADD the requested fields (Account.Name, Who.Name, What.Name, etc.)\n`;
+      
+      // If asking for related data from different object
+      if (isDifferentObject && previousRecordIds.length > 0) {
+        conversationContext += `\n⚠️ USER ASKING FOR RELATED DATA FROM DIFFERENT OBJECT:\n`;
+        conversationContext += `- Previous object: ${previousObject}\n`;
+        conversationContext += `- Previous returned ${previousRecordIds.length} record IDs\n`;
+        conversationContext += `- Use these IDs to find related records\n`;
+        conversationContext += `- Example patterns:\n`;
+        conversationContext += `  * If previous was Contact, user asks "account names":\n`;
+        conversationContext += `    SELECT Id, Name, AccountId, Account.Name FROM Contact WHERE Id IN ('${previousRecordIds.slice(0, 3).join("','")}'...)\n`;
+        conversationContext += `  * If previous was Opportunity, user asks "related accounts":\n`;
+        conversationContext += `    SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE Id IN ('${previousRecordIds.slice(0, 3).join("','")}'...))\n\n`;
+      } else {
+        conversationContext += `- ADD the requested fields (Account.Name, Who.Name, What.Name, etc.)\n`;
+      }
+      
       conversationContext += `\nExample:\n`;
       conversationContext += `  Previous: SELECT Id, Subject FROM Task WHERE Id = '00TGA00003fTAL32AO'\n`;
       conversationContext += `  User: "show client name too"\n`;
@@ -508,7 +532,9 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
     /replace_with/i,
     /\[id\]/i,
     /'id'/i,
-    /'xxx'/i
+    /'xxx'/i,
+    /'003xxx'/i,
+    /'003yyy'/i
   ];
   
   const hasPlaceholder = placeholderPatterns.some(pattern => pattern.test(result));
@@ -516,14 +542,27 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
     console.error('❌ LLM generated placeholder ID');
     console.error('   Generated query:', result);
     
-    // Try to fix using ID from previous query
-    if (conversationHistory.length > 0) {
+    // Try to fix using IDs from previous query results
+    if (previousRecordIds.length > 0) {
+      console.log(`✅ Replacing placeholders with ${previousRecordIds.length} IDs from previous results`);
+      
+      // Replace IN clause with actual IDs
+      const inClauseMatch = result.match(/WHERE\s+Id\s+IN\s*\([^)]+\)/i);
+      if (inClauseMatch) {
+        const idsString = previousRecordIds.map(id => `'${id}'`).join(', ');
+        result = result.replace(/WHERE\s+Id\s+IN\s*\([^)]+\)/i, `WHERE Id IN (${idsString})`);
+      }
+      
+      // Replace single placeholder IDs
+      result = result.replace(/('your_\w+_id'|'replace_with[^']*'|'\[id\]'|'id'|'xxx'|'003xxx'|'003yyy')/gi, `'${previousRecordIds[0]}'`);
+    } else if (conversationHistory.length > 0) {
+      // Fallback: try to get ID from previous SOQL
       const lastQuery = conversationHistory[conversationHistory.length - 1].soql;
       const idFromPrevious = lastQuery.match(/WHERE\s+Id\s*=\s*'([^']+)'/i);
       
       if (idFromPrevious) {
-        console.log('✅ Fixing with ID from previous query:', idFromPrevious[1]);
-        result = result.replace(/('your_\w+_id'|'replace_with[^']*'|'\[id\]'|'id'|'xxx')/gi, `'${idFromPrevious[1]}'`);
+        console.log('✅ Fixing with ID from previous SOQL:', idFromPrevious[1]);
+        result = result.replace(/('your_\w+_id'|'replace_with[^']*'|'\[id\]'|'id'|'xxx'|'003xxx'|'003yyy')/gi, `'${idFromPrevious[1]}'`);
       }
     }
   }
