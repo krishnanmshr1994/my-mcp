@@ -194,11 +194,42 @@ function formatSchema(schema) {
   return text;
 }
 
+async function getEnrichedSchema(objectsToEnrich = null) {
+  const schema = await getOrgSchema();
+  const enrichedSchema = { ...schema, relationships: {} };
+  
+  // If specific objects provided, enrich those. Otherwise enrich all standard objects.
+  const objectsToProcess = objectsToEnrich && objectsToEnrich.length > 0 
+    ? objectsToEnrich 
+    : schema.standard.map(o => o.apiName).concat(schema.custom.map(o => o.apiName));
+  
+  // Limit to avoid excessive API calls if enriching all objects
+  const maxObjectsToEnrich = objectsToEnrich ? 50 : 20;
+  const objectsToFetch = objectsToProcess.slice(0, maxObjectsToEnrich);
+  
+  for (const objName of objectsToFetch) {
+    try {
+      const objSchema = await getObjectSchema(objName);
+      enrichedSchema.relationships[objName] = {
+        fields: objSchema.fields,
+        lookupFields: objSchema.fields.filter(f => 
+          f.DataType === 'Reference' || 
+          f.QualifiedApiName.endsWith('Id')
+        )
+      };
+    } catch (err) {
+      // Silently skip if object doesn't exist in org
+    }
+  }
+  
+  return enrichedSchema;
+}
+
 // ============================================
 // IMPROVED SOQL GENERATION
 // ============================================
 
-function buildSOQLPrompt(question, schemaText, objectFieldsList, conversationContext, detectedObject, isFieldsQuery) {
+function buildSOQLPrompt(question, schemaText, objectFieldsList, conversationContext, detectedObject, isFieldsQuery, enrichedSchema) {
   const userId = currentUserId || 'UNKNOWN_USER';
   const today = new Date().toISOString().split('T')[0];
 
@@ -211,6 +242,23 @@ function buildSOQLPrompt(question, schemaText, objectFieldsList, conversationCon
     idContext = `\n=== SALESFORCE IDs DETECTED ===\n`;
     extractedIds.forEach(id => idContext += `- ${id}\n`);
     idContext += `⚠️ Use these EXACT IDs. NO placeholders like 'your_id' or 'your_task_id'.\n\n`;
+  }
+
+  // Build relationship reference for key objects
+  let relationshipRefrence = '';
+  if (enrichedSchema && enrichedSchema.relationships && Object.keys(enrichedSchema.relationships).length > 0) {
+    relationshipRefrence = '\n=== OBJECT RELATIONSHIPS & LOOKUP FIELDS ===\n';
+    Object.entries(enrichedSchema.relationships).forEach(([objName, data]) => {
+      const lookupFields = data && data.lookupFields ? data.lookupFields : [];
+      if (lookupFields.length > 0) {
+        relationshipRefrence += `\n${objName}:\n`;
+        lookupFields.forEach(field => {
+          if (field && field.QualifiedApiName && field.DataType) {
+            relationshipRefrence += `  - ${field.QualifiedApiName} (${field.DataType})\n`;
+          }
+        });
+      }
+    });
   }
 
   return `You are a Salesforce SOQL expert. Generate VALID, EXECUTABLE SOQL queries.
@@ -241,9 +289,9 @@ function buildSOQLPrompt(question, schemaText, objectFieldsList, conversationCon
    - For "client" questions: include BOTH Who and What (client could be either)
    
    Polymorphic Examples:
-   - "task for account 001xxx": SELECT Id, Subject, WhatId, What.Name FROM Task WHERE WhatId = '001xxx'
-   - "task for contact 003xxx": SELECT Id, Subject, WhoId, Who.Name FROM Task WHERE WhoId = '003xxx'
-   - "client for task 00Txxx": SELECT Id, WhoId, Who.Name, Who.Type, WhatId, What.Name, What.Type FROM Task WHERE Id = '00Txxx'
+   - "task for account": SELECT Id, Subject, WhatId, What.Name FROM Task WHERE WhatId != null AND WhatId LIKE '001%' LIMIT 5
+   - "task for contact": SELECT Id, Subject, WhoId, Who.Name FROM Task WHERE WhoId != null AND WhoId LIKE '003%' LIMIT 5
+   - "client for task [ID]": SELECT Id, WhoId, Who.Name, Who.Type, WhatId, What.Name, What.Type FROM Task WHERE Id = '[specific task ID]'
 
 5. USER CONTEXT:
    - Current User ID: '${userId}'
@@ -287,6 +335,19 @@ function buildSOQLPrompt(question, schemaText, objectFieldsList, conversationCon
    - Parent-to-Child: (SELECT Id, Name FROM Contacts), (SELECT Id, Name FROM Opportunities)
    - Custom: Custom__r.Name, Custom__r.Field__c
 
+9. SWITCHING BETWEEN OBJECTS:
+   ❌ NEVER create invalid subqueries: SELECT ... FROM Account WHERE Id IN (SELECT ... FROM Accounts)
+   ✅ To get related records from a different object:
+      1. Identify the lookup field (e.g., AccountId on Contact points to Account)
+      2. SELECT from the TARGET object using IN with a subquery on the SOURCE object
+      3. Example: "Give me account details for these contacts"
+         - Target object: Account
+         - Source object: Contact (previous results)
+         - Lookup field: Contact.AccountId
+         - CORRECT: SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Contact WHERE Id IN (SELECT Id FROM Contact LIMIT 2))
+         - WRONG: SELECT Id, Name FROM Contact WHERE Id IN (SELECT Id FROM Contact LIMIT 2) [returns contacts, not accounts]
+         - WRONG: SELECT * FROM Account WHERE Id IN (SELECT * FROM Contact WHERE AccountId != null) [invalid nesting]
+
 ${idContext}
 
 === EXAMPLES ===
@@ -321,12 +382,19 @@ ${idContext}
 "give me 5 contacts"
 → SELECT Id, Name, Email, Phone FROM Contact LIMIT 5
 
+"account details of contacts"
+→ SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Contact)
+
+"accounts for these contacts"
+→ SELECT Id, Name, BillingCity, BillingState FROM Account WHERE Id IN (SELECT AccountId FROM Contact LIMIT 5)
+
 "accounts with opportunities"
 → SELECT Id, Name, (SELECT Id, Name, Amount FROM Opportunities) FROM Account
 
 === SCHEMA ===
 ${schemaText}
 ${objectFieldsList}
+${relationshipRefrence}
 ${conversationContext}
 
 === QUESTION ===
@@ -354,6 +422,68 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
   }
 
   const schema = await getOrgSchema();
+  
+  const isReferencingPrevious = /\b(above|those|these|previous|that|them)\b/i.test(question);
+  const isAddingFields = /\b(related|also|as well|include|show|add|too)\b/i.test(question) && isReferencingPrevious;
+  
+  const allObjects = [...schema.standard, ...schema.custom];
+  const questionLower = question.toLowerCase();
+  const mentionedObjects = allObjects.filter(obj => 
+    questionLower.includes(obj.apiName.toLowerCase()) ||
+    questionLower.includes(obj.label.toLowerCase())
+  );
+  
+  // Collect all objects that might need relationship info
+  const objectsForEnrichment = new Set();
+  
+  // Add detected object
+  if (detectedObject) objectsForEnrichment.add(detectedObject);
+  
+  // Add mentioned objects from question
+  mentionedObjects.forEach(obj => objectsForEnrichment.add(obj.apiName));
+  
+  // Add previous object from conversation
+  let previousObject = null;
+  let previousLimit = null;
+  let previousWhereClause = null;
+  let previousRecordIds = [];
+  
+  if (conversationHistory.length > 0) {
+    const lastQuery = conversationHistory[conversationHistory.length - 1];
+    const fromMatch = lastQuery.soql.match(/FROM\s+(\w+)/i);
+    if (fromMatch) {
+      previousObject = fromMatch[1];
+      objectsForEnrichment.add(previousObject);
+    }
+    
+    const limitMatch = lastQuery.soql.match(/LIMIT\s+(\d+)/i);
+    if (limitMatch) {
+      previousLimit = limitMatch[1];
+    }
+    
+    const whereMatch = lastQuery.soql.match(/WHERE\s+(.+?)(?:ORDER BY|LIMIT|$)/i);
+    if (whereMatch) {
+      previousWhereClause = whereMatch[1].trim();
+    }
+    
+    // Extract actual record IDs from previous results
+    if (lastQuery.results && Array.isArray(lastQuery.results) && lastQuery.results.length > 0) {
+      previousRecordIds = lastQuery.results
+        .filter(r => r && r.Id)
+        .map(r => r.Id)
+        .slice(0, 200); // Limit to 200 IDs to avoid query length issues
+    }
+  }
+  
+  // Now enrich schema for all detected objects (always enrich at least previous/current)
+  let objectsToEnrichList = Array.from(objectsForEnrichment);
+  if (objectsToEnrichList.length === 0) {
+    if (previousObject) objectsToEnrichList.push(previousObject);
+    if (detectedObject) objectsToEnrichList.push(detectedObject);
+  }
+  const enrichedSchema = objectsToEnrichList.length > 0 
+    ? await getEnrichedSchema(objectsToEnrichList) 
+    : { standard: schema.standard, custom: schema.custom, relationships: {} };
   const schemaText = formatSchema(schema);
 
   let objectFieldsList = '';
@@ -362,7 +492,6 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
   if (detectedObject || fieldQueryMatch) {
     try {
       const targetObject = detectedObject || fieldQueryMatch[1];
-      const allObjects = [...schema.standard, ...schema.custom];
       const matchedObject = allObjects.find(obj => 
         obj.apiName.toLowerCase().includes(targetObject.toLowerCase()) ||
         obj.label.toLowerCase().includes(targetObject.toLowerCase())
@@ -378,50 +507,8 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
       console.error('Failed to get object fields:', err);
     }
   }
-
-  const isReferencingPrevious = /\b(above|those|these|previous|that|them)\b/i.test(question);
-  const isAddingFields = /\b(related|also|as well|include|show|add|too)\b/i.test(question) && isReferencingPrevious;
-  
-  const allObjects = [...schema.standard, ...schema.custom];
-  const questionLower = question.toLowerCase();
-  const mentionedObjects = allObjects.filter(obj => 
-    questionLower.includes(obj.apiName.toLowerCase()) ||
-    questionLower.includes(obj.label.toLowerCase())
-  );
-  
-  let previousObject = null;
-  let previousLimit = null;
-  let previousWhereClause = null;
-  let previousRecordIds = [];
-  
-  if (conversationHistory.length > 0) {
-    const lastQuery = conversationHistory[conversationHistory.length - 1];
-    const fromMatch = lastQuery.soql.match(/FROM\s+(\w+)/i);
-    if (fromMatch) {
-      previousObject = fromMatch[1];
-    }
-    
-    const limitMatch = lastQuery.soql.match(/LIMIT\s+(\d+)/i);
-    if (limitMatch) {
-      previousLimit = limitMatch[1];
-    }
-    
-    const whereMatch = lastQuery.soql.match(/WHERE\s+(.+?)(?:ORDER BY|LIMIT|$)/i);
-    if (whereMatch) {
-      previousWhereClause = whereMatch[1].trim();
-    }
-    
-    // Extract actual record IDs from previous results
-    if (lastQuery.results && Array.isArray(lastQuery.results)) {
-      previousRecordIds = lastQuery.results
-        .filter(r => r.Id)
-        .map(r => r.Id)
-        .slice(0, 200); // Limit to 200 IDs to avoid query length issues
-    }
-  }
-  
-  const isDifferentObject = mentionedObjects.length > 0 && previousObject && 
-                            !mentionedObjects.some(obj => obj.apiName.toLowerCase() === previousObject.toLowerCase());
+  const isDifferentObject = previousObject && detectedObject && 
+                            detectedObject.toLowerCase() !== previousObject.toLowerCase();
   const hasRelatedKeywords = /\b(related|from|of|for)\b/i.test(question);
   const isNewQuery = isDifferentObject && !hasRelatedKeywords && !isAddingFields;
   
@@ -463,13 +550,43 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
       if (isDifferentObject && previousRecordIds.length > 0) {
         conversationContext += `\n⚠️ USER ASKING FOR RELATED DATA FROM DIFFERENT OBJECT:\n`;
         conversationContext += `- Previous object: ${previousObject}\n`;
+        conversationContext += `- User is asking for data about DIFFERENT object type\n`;
         conversationContext += `- Previous returned ${previousRecordIds.length} record IDs\n`;
-        conversationContext += `- Use these IDs to find related records\n`;
-        conversationContext += `- Example patterns:\n`;
-        conversationContext += `  * If previous was Contact, user asks "account names":\n`;
-        conversationContext += `    SELECT Id, Name, AccountId, Account.Name FROM Contact WHERE Id IN ('${previousRecordIds.slice(0, 3).join("','")}'...)\n`;
-        conversationContext += `  * If previous was Opportunity, user asks "related accounts":\n`;
-        conversationContext += `    SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE Id IN ('${previousRecordIds.slice(0, 3).join("','")}'...))\n\n`;
+        conversationContext += `- ❌ WRONG: SELECT from previous object with new WHERE - returns SAME object type\n`;
+        conversationContext += `- ❌ WRONG: Invalid subqueries or non-existent relationships\n`;
+        conversationContext += `- ✅ CORRECT: Use lookup fields from the RELATIONSHIP REFERENCE below\n`;
+        conversationContext += `- Then SELECT from the TARGET object\n`;
+        conversationContext += `- Example pattern:\n`;
+        
+        // Use ACTUAL record IDs from previous query (first 2-3)
+        const exampleIds = previousRecordIds.slice(0, 2);
+        const exampleIdString = exampleIds.map(id => `'${id}'`).join(', ');
+        
+        // Find example lookup fields from previous object
+        const prevObjLookups = (enrichedSchema && enrichedSchema.relationships && enrichedSchema.relationships[previousObject]) 
+          ? enrichedSchema.relationships[previousObject].lookupFields 
+          : [];
+        const exampleLookupField = (prevObjLookups && prevObjLookups.length > 0 && prevObjLookups[0] && prevObjLookups[0].QualifiedApiName) 
+          ? prevObjLookups[0].QualifiedApiName 
+          : 'AccountId';
+        
+        conversationContext += `  SELECT Id, Name FROM [TargetObject] WHERE Id IN (SELECT ${exampleLookupField} FROM ${previousObject} WHERE Id IN (${exampleIdString}))\n`;
+        conversationContext += `  Replace [TargetObject] with the object name the user is asking for\n`;
+        conversationContext += `  Use lookup fields from OBJECT RELATIONSHIPS section to identify correct field\n\n`;
+        
+        conversationContext += `  ⚠️ EXAMPLES based on common relationships:\n`;
+        // Generate examples based on what we know about the previous object
+        if (previousObject === 'Contact') {
+          conversationContext += `  - Contact → Account: SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Contact WHERE Id IN (${exampleIdString}))\n`;
+        } else if (previousObject === 'Opportunity') {
+          conversationContext += `  - Opportunity → Account: SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE Id IN (${exampleIdString}))\n`;
+        } else if (previousObject === 'Case') {
+          conversationContext += `  - Case → Account: SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Case WHERE Id IN (${exampleIdString}))\n`;
+        } else if (previousObject === 'Task' || previousObject === 'Event') {
+          conversationContext += `  - ${previousObject} → Account: SELECT Id, Name FROM Account WHERE Id IN (SELECT WhatId FROM ${previousObject} WHERE WhatId != null AND WhatId LIKE '001%' AND Id IN (${exampleIdString}))\n`;
+        }
+        
+        conversationContext += `  Use OBJECT RELATIONSHIPS & LOOKUP FIELDS section to find correct field and target\n\n`;
       } else {
         conversationContext += `- ADD the requested fields (Account.Name, Who.Name, What.Name, etc.)\n`;
       }
@@ -487,7 +604,7 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
     conversationContext = '\n\n=== NEW QUERY ===\nThis is a different topic. Generate a fresh SOQL query.\n\n';
   }
 
-  const prompt = buildSOQLPrompt(question, schemaText, objectFieldsList, conversationContext, detectedObject, isFieldsQuery);
+  const prompt = buildSOQLPrompt(question, schemaText, objectFieldsList, conversationContext, detectedObject, isFieldsQuery, enrichedSchema);
 
   const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
     method: 'POST',
@@ -847,40 +964,40 @@ EXPLANATION: [reasoning]`;
     const queryResult = await query(soqlResult.soql);
 
     const explainPrompt = `Question: "${question}"
-SOQL: ${soqlResult.soql}
-Results: ${JSON.stringify(queryResult.records.slice(0, 3))}
+    SOQL: ${soqlResult.soql}
+    Results: ${JSON.stringify(queryResult.records.slice(0, 3))}
 
-Explain clearly what this shows. Format numbers/dates properly.`;
+    Explain clearly what this shows. Format numbers/dates properly.`;
 
-    const llmRes = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${NVIDIA_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: NVIDIA_MODEL,
-        messages: [{ role: 'user', content: explainPrompt }],
-        temperature: 0.7,
-        max_tokens: 512
-      })
+        const llmRes = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${NVIDIA_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: NVIDIA_MODEL,
+            messages: [{ role: 'user', content: explainPrompt }],
+            temperature: 0.7,
+            max_tokens: 512
+          })
+        });
+
+      const llmData = await llmRes.json();
+
+        res.json({
+          question,
+          soql: soqlResult.soql,
+          data: queryResult,
+          explanation: llmData.choices[0].message.content,
+          recordCount: queryResult.totalSize,
+          response: `Found ${queryResult.totalSize} records`
+        });
+
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
     });
-
-    const llmData = await llmRes.json();
-
-    res.json({
-      question,
-      soql: soqlResult.soql,
-      data: queryResult,
-      explanation: llmData.choices[0].message.content,
-      recordCount: queryResult.totalSize,
-      response: `Found ${queryResult.totalSize} records`
-    });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 app.post('/chat', async (req, res) => {
   try {
@@ -890,12 +1007,12 @@ app.post('/chat', async (req, res) => {
     if (!message) return res.status(400).json({ error: 'message required' });
 
     let systemPrompt = `You are a helpful Salesforce assistant. You can:
-- Answer questions about Salesforce
-- Help with SOQL queries (suggest using /smart-query for data questions)
-- Explain Salesforce concepts
-- Provide best practices
+                      - Answer questions about Salesforce
+                      - Help with SOQL queries (suggest using /smart-query for data questions)
+                      - Explain Salesforce concepts
+                      - Provide best practices
 
-Be concise and helpful.`;
+                      Be concise and helpful.`;
 
     if (includeSchema) {
       const schema = await getOrgSchema();
