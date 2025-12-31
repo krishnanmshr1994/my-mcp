@@ -655,15 +655,14 @@ app.post('/describe-object', async (req, res) => {
   }
 });
 
+// generate SOQL with context endpoint
 app.post('/generate-soql', async (req, res) => {
   try {
-    if (!NVIDIA_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
-
-    await getConnection();
-    const { question, objectHint } = req.body;
-    if (!question) return res.status(400).json({ error: 'question required' });
-
-    const result = await generateSOQLWithContext(question, objectHint, []);
+    const { question, objectHint, conversationHistory = [] } = req.body;
+    
+    // Pass history here. Your internal logic (isNewQuery) 
+    // will determine if it actually gets used in the prompt.
+    const result = await generateSOQLWithContext(question, objectHint, conversationHistory);
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
