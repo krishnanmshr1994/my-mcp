@@ -1062,10 +1062,14 @@ Remember: Be helpful, accurate, and concise. Guide users to the right tools and 
  * @param {string} query - The SOQL query that failed
  * @param {string} error - The error message received
  * @param {string} question - Original user question
+ * @param {string} schemaText - Available schema
+ * @param {number} attemptNumber - Which retry attempt this is
  * @returns {string} Prompt for analyzing and fixing query errors
  */
-export function getErrorAnalysisPrompt(query, error, question) {
-  return `A SOQL query has failed. Analyze the error and suggest a fix.
+export function getErrorAnalysisPrompt(query, error, question, schemaText = '', attemptNumber = 1) {
+  return `A SOQL query has failed. Analyze the error and generate a corrected query.
+
+=== ATTEMPT ${attemptNumber} ===
 
 === ORIGINAL QUESTION ===
 "${question}"
@@ -1076,25 +1080,110 @@ ${query}
 === ERROR MESSAGE ===
 ${error}
 
-=== YOUR TASK ===
-1. Identify the root cause of the error
-2. Provide a corrected SOQL query
-3. Explain what was wrong and how you fixed it
+=== AVAILABLE SCHEMA ===
+${schemaText}
 
-=== COMMON ERROR PATTERNS ===
-- "No such column" → Field doesn't exist or is misspelled
-- "unexpected token" → Syntax error in query
-- "MALFORMED_QUERY" → Invalid SOQL syntax
-- "Invalid field" → Field not available on this object
-- "Aggregate functions not allowed" → Missing GROUP BY clause
-- "Field must be grouped or aggregated" → Non-aggregated field in aggregate query
+=== ERROR PATTERN ANALYSIS ===
+
+Analyze the error message to identify the root cause:
+
+1. **"No such column" errors:**
+   - Field doesn't exist on this object
+   - Field name is misspelled
+   - Using compound field (like Address, Location) instead of components
+   - Trying to access object-specific field via polymorphic relationship (What.Industry, Who.Email)
+   
+   Solutions:
+   - Check schema for correct field name
+   - Replace compound fields with components (BillingStreet, BillingCity, etc.)
+   - For polymorphic fields, only use generic fields (What.Name, What.Type, not What.Industry)
+
+2. **"not supported for semi join" errors:**
+   - Task/Event cannot be used in WHERE IN subqueries
+   - ActivityHistory cannot be used in semi-joins
+   
+   Solutions:
+   - Query Task/Event directly with relationship fields
+   - Use two-step approach: get IDs first, then query target object
+   - Use relationship traversal (What.Name) instead of semi-join
+
+3. **"unexpected token" or "MALFORMED_QUERY" errors:**
+   - Syntax error in query
+   - Missing quotes around text values
+   - Incorrect use of operators
+   - Invalid date format
+   
+   Solutions:
+   - Check SQL syntax carefully
+   - Ensure text values have single quotes
+   - Use correct operators (=, !=, IN, LIKE)
+   - Use proper date literals (TODAY, LAST_N_DAYS:7)
+
+4. **"Invalid field" errors:**
+   - Field not available on this object
+   - Wrong object selected
+   - Relationship field syntax error
+   
+   Solutions:
+   - Verify field exists in schema
+   - Check if querying correct object
+   - Use correct relationship syntax (Account.Name for lookup, Contacts for child)
+
+5. **"must be grouped or aggregated" errors:**
+   - Non-aggregated field in aggregate query
+   - Missing GROUP BY clause
+   
+   Solutions:
+   - Add all non-aggregated fields to GROUP BY
+   - Or remove non-aggregated fields from SELECT
+
+6. **"Aggregate functions not allowed" errors:**
+   - Using aggregate without GROUP BY where required
+   
+   Solutions:
+   - Add GROUP BY clause
+   - Or restructure query
+
+=== YOUR TASK ===
+
+1. Identify the specific error type from the patterns above
+2. Determine the root cause
+3. Generate a CORRECTED SOQL query that will execute successfully
+4. Ensure the corrected query still answers the original question
+
+=== CRITICAL RULES FOR CORRECTION ===
+
+- If polymorphic field error (What.Industry): Use two-step approach or only generic fields
+- If semi-join error with Task: Query Task directly or use different approach
+- If compound field error: Replace with individual components
+- If field doesn't exist: Check schema and use correct field name
+- If wrong object: Identify correct object from question and schema
+- ALWAYS validate against schema before generating corrected query
+- Maintain the user's original intent
 
 === OUTPUT FORMAT ===
-CORRECTED_QUERY: [fixed SOQL query]
-EXPLANATION: [what was wrong and how it was fixed]
-ROOT_CAUSE: [underlying issue]
 
-Be specific and actionable in your response.`;
+Return ONLY the corrected SOQL query. No explanations. No markdown. No preamble.
+The query should be ready to execute immediately.
+
+If the error cannot be fixed (truly impossible request):
+NOT_POSSIBLE: [brief reason]
+
+Example corrections:
+
+Failed: SELECT What.Industry FROM Task WHERE Id = 'xxx'
+Error: No such column 'Industry' on entity 'Name'
+Corrected: SELECT Id, WhatId, What.Name, What.Type FROM Task WHERE Id = 'xxx'
+
+Failed: SELECT Id FROM Account WHERE Id IN (SELECT WhatId FROM Task)
+Error: Entity 'Task' is not supported for semi join
+Corrected: SELECT Id, Subject, WhatId, What.Name FROM Task WHERE WhatId LIKE '001%' LIMIT 10
+
+Failed: SELECT Address FROM Account
+Error: No such column 'Address'
+Corrected: SELECT Id, Name, BillingStreet, BillingCity, BillingState, BillingPostalCode FROM Account LIMIT 10
+
+Generate the corrected query now:`;
 }
 
 /**

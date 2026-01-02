@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import jsforce from 'jsforce';
-import { buildSOQLPrompt, getSummarizeSystemPrompt, getCalculationPrompt, getExplanationPrompt, getChatSystemPrompt } from './prompts.js';
+import { buildSOQLPrompt, getSummarizeSystemPrompt, getCalculationPrompt, getExplanationPrompt, getChatSystemPrompt, getErrorAnalysisPrompt } from './prompts.js';
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -518,6 +518,194 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
 }
 
 // ============================================
+// SELF-HEALING SOQL GENERATION
+// ============================================
+
+/**
+ * Attempts to execute SOQL with automatic error correction
+ * @param {string} question - Original user question
+ * @param {string} objectHint - Hint about which object to query
+ * @param {array} conversationHistory - Previous conversation context
+ * @param {number} maxRetries - Maximum retry attempts (default: 3)
+ * @returns {object} Result with query, data, and metadata
+ */
+async function generateAndExecuteSOQLWithHealing(question, objectHint, conversationHistory, maxRetries = 3) {
+  let attemptNumber = 0;
+  let lastError = null;
+  let lastQuery = null;
+  const errorHistory = [];
+
+  while (attemptNumber < maxRetries) {
+    attemptNumber++;
+    console.log(`\n🔄 Attempt ${attemptNumber}/${maxRetries} for question: "${question}"`);
+
+    try {
+      let soqlResult;
+      
+      if (attemptNumber === 1) {
+        // First attempt: Generate fresh query
+        soqlResult = await generateSOQLWithContext(question, objectHint, conversationHistory);
+      } else {
+        // Retry attempts: Use error analysis to fix query
+        console.log(`🔧 Analyzing error and regenerating query...`);
+        console.log(`   Previous error: ${lastError}`);
+        
+        const schema = await getOrgSchema();
+        const schemaText = formatSchema(schema);
+        
+        const errorPrompt = getErrorAnalysisPrompt(
+          lastQuery, 
+          lastError, 
+          question, 
+          schemaText, 
+          attemptNumber
+        );
+
+        const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${NVIDIA_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: NVIDIA_MODEL,
+            messages: [{ role: 'user', content: errorPrompt }],
+            temperature: 0.1, // Low temperature for precise corrections
+            max_tokens: 1024
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`NVIDIA API error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        let correctedQuery = data.choices[0].message.content.trim();
+        
+        // Check if LLM says it's not possible
+        if (correctedQuery.startsWith('NOT_POSSIBLE:')) {
+          return {
+            success: false,
+            error: correctedQuery.replace('NOT_POSSIBLE:', '').trim(),
+            question,
+            attempts: attemptNumber,
+            errorHistory,
+            notPossible: true
+          };
+        }
+        
+        // Clean the corrected query
+        correctedQuery = correctedQuery
+          .replace(/```sql\n?/g, '')
+          .replace(/```\n?/g, '')
+          .replace(/^CORRECTED_QUERY:\s*/i, '')
+          .trim();
+        
+        console.log(`✨ Corrected query: ${correctedQuery}`);
+        
+        soqlResult = {
+          soql: correctedQuery,
+          originalQuestion: question,
+          needsClarification: false,
+          corrected: true,
+          attemptNumber
+        };
+      }
+
+      if (soqlResult.needsClarification) {
+        return {
+          success: false,
+          needsClarification: true,
+          question: soqlResult.question,
+          originalQuestion: question,
+          attempts: attemptNumber
+        };
+      }
+
+      lastQuery = soqlResult.soql;
+      
+      // Try to execute the query
+      console.log(`📊 Executing query: ${lastQuery.substring(0, 100)}...`);
+      const queryResult = await query(lastQuery);
+      
+      console.log(`✅ Query successful! Returned ${queryResult.totalSize} records`);
+      
+      return {
+        success: true,
+        soql: lastQuery,
+        data: queryResult,
+        question,
+        recordCount: queryResult.totalSize,
+        attempts: attemptNumber,
+        errorHistory,
+        healed: attemptNumber > 1
+      };
+
+    } catch (error) {
+      lastError = error.message;
+      errorHistory.push({
+        attempt: attemptNumber,
+        query: lastQuery,
+        error: lastError
+      });
+      
+      console.error(`❌ Attempt ${attemptNumber} failed: ${lastError}`);
+      
+      // Check if this is a fatal error that can't be fixed
+      const fatalErrors = [
+        'Invalid Session ID',
+        'INVALID_SESSION_ID',
+        'Session expired',
+        'Authentication failed'
+      ];
+      
+      const isFatalError = fatalErrors.some(fatal => 
+        lastError.includes(fatal)
+      );
+      
+      if (isFatalError) {
+        console.error('💀 Fatal error detected, cannot retry');
+        return {
+          success: false,
+          error: lastError,
+          question,
+          soql: lastQuery,
+          attempts: attemptNumber,
+          errorHistory,
+          fatal: true
+        };
+      }
+      
+      // If this was the last attempt, return the error
+      if (attemptNumber >= maxRetries) {
+        console.error(`💀 Max retries (${maxRetries}) reached, giving up`);
+        return {
+          success: false,
+          error: lastError,
+          question,
+          soql: lastQuery,
+          attempts: attemptNumber,
+          errorHistory,
+          maxRetriesReached: true
+        };
+      }
+      
+      // Otherwise, continue to next attempt
+      console.log(`🔄 Retrying with error correction...`);
+    }
+  }
+
+  // Should never reach here, but just in case
+  return {
+    success: false,
+    error: 'Unexpected error in retry loop',
+    question,
+    attempts: attemptNumber,
+    errorHistory
+  };
+}
+
+// ============================================
 // API ENDPOINTS
 // ============================================
 
@@ -767,45 +955,99 @@ app.post('/smart-query', async (req, res) => {
       });
     }
 
-    const soqlResult = await generateSOQLWithContext(question, objectHint, conversationHistory);
+    // Use self-healing mechanism for regular queries
+    const healingResult = await generateAndExecuteSOQLWithHealing(question, objectHint, conversationHistory);
     
-    if (soqlResult.needsClarification) {
-      return res.json(soqlResult);
+    // Handle clarification needed
+    if (healingResult.needsClarification) {
+      return res.json({
+        needsClarification: true,
+        question: healingResult.question,
+        originalQuestion: healingResult.originalQuestion
+      });
     }
 
-    const queryResult = await query(soqlResult.soql);
+    // Handle not possible scenario
+    if (healingResult.notPossible) {
+      return res.json({
+        question,
+        soql: null,
+        data: { records: [], totalSize: 0 },
+        explanation: healingResult.error,
+        response: 'Query cannot be executed',
+        notPossible: true,
+        attempts: healingResult.attempts
+      });
+    }
 
-    const explainPrompt = getExplanationPrompt(question, soqlResult.soql, queryResult.records);
+    // Handle fatal errors
+    if (healingResult.fatal) {
+      return res.status(500).json({
+        error: healingResult.error,
+        fatal: true,
+        message: `A fatal error occurred: ${healingResult.error}. Please check Salesforce connection.`
+      });
+    }
 
-        const llmRes = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${NVIDIA_API_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            model: NVIDIA_MODEL,
-            messages: [{ role: 'user', content: explainPrompt }],
-            temperature: 0.7,
-            max_tokens: 512
-          })
-        });
+    // Handle max retries reached
+    if (healingResult.maxRetriesReached) {
+      return res.json({
+        error: healingResult.error,
+        question,
+        soql: healingResult.soql,
+        attempts: healingResult.attempts,
+        errorHistory: healingResult.errorHistory,
+        message: `Query failed after ${healingResult.attempts} attempts. The final error was: ${healingResult.error}`,
+        data: { records: [], totalSize: 0 }
+      });
+    }
+
+    // Success case
+    if (healingResult.success) {
+      const explainPrompt = getExplanationPrompt(question, healingResult.soql, healingResult.data.records);
+
+      const llmRes = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${NVIDIA_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: NVIDIA_MODEL,
+          messages: [{ role: 'user', content: explainPrompt }],
+          temperature: 0.7,
+          max_tokens: 512
+        })
+      });
 
       const llmData = await llmRes.json();
 
-        res.json({
-          question,
-          soql: soqlResult.soql,
-          data: queryResult,
-          explanation: llmData.choices[0].message.content,
-          recordCount: queryResult.totalSize,
-          response: `Found ${queryResult.totalSize} records`
-        });
+      return res.json({
+        question,
+        soql: healingResult.soql,
+        data: healingResult.data,
+        explanation: llmData.choices[0].message.content,
+        recordCount: healingResult.recordCount,
+        response: `Found ${healingResult.recordCount} records`,
+        healed: healingResult.healed,
+        attempts: healingResult.attempts,
+        errorHistory: healingResult.errorHistory
+      });
+    }
 
-      } catch (error) {
-        res.status(500).json({ error: error.message });
-      }
+    // Fallback error response
+    return res.json({
+      error: 'Unexpected error occurred',
+      question,
+      attempts: healingResult.attempts,
+      data: { records: [], totalSize: 0 }
     });
+
+  } catch (error) {
+    console.error('❌ /smart-query error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 app.post('/chat', async (req, res) => {
   try {
