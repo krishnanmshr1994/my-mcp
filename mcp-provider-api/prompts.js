@@ -1639,7 +1639,7 @@ User's current question: "${question}"
 CONVERSATION HISTORY:
 - Previous object queried: ${sourceObject}
 - Previous records retrieved: ${sourceRecordIds.length} records
-- Record IDs available: ${sourceRecordIds.slice(0, 5).map(id => \`'\${id}'\`).join(', ')}${sourceRecordIds.length > 5 ? ', ...' : ''}
+- Record IDs available: ${sourceRecordIds.slice(0, 5).map(id => `'${id}'`).join(', ')}${sourceRecordIds.length > 5 ? ', ...' : ''}
 - Current query target: ${targetObject}
 
 === RELATIONSHIP MAPPING RULES ===
