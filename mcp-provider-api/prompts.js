@@ -66,38 +66,57 @@ export function buildSOQLPrompt(question, schemaText, objectFieldsList, conversa
      * Custom objects → Examine schema for key fields (look for Email, Status, Date, Amount patterns)
 
 2. **"TOP N" REASONING - Analyze Schema:**
-   When user asks "top 5 [objects]" or "best [objects]":
+   When user asks about "top", "best", "highest" records:
+   
+   **DO NOT use hardcoded assumptions.** Instead, reason through the context:
    
    Step 1: Identify the object type
-   Step 2: Examine available fields for ranking candidates:
-      - Currency fields: Amount, Price, Revenue, Value, Total
-      - Numeric fields: Score, Rating, Marks, GPA, Count, Quantity
-      - Date fields: CreatedDate (for "latest"), CloseDate (for "soonest")
-   Step 3: Choose the most logical field:
-      - Opportunity/Quote/Order → Amount field
-      - Student/Employee → Score/Rating/Performance field
-      - Product → Sales/Units/Revenue field
-      - Support objects → Priority or CreatedDate
-      - Custom objects → Search for *Amount*, *Score*, *Value*, *Total* pattern fields
-   Step 4: If ambiguous or no clear field → CLARIFICATION_NEEDED: "Top 5 by which field?"
+   Step 2: Examine available fields in the schema for ranking candidates
+   Step 3: Analyze the user's intent and domain context:
+      - What makes a record "top" in this domain?
+      - For business objects (Opportunity, Quote, Order) → monetary value is usually primary
+      - For performance objects (Student, Employee) → score/rating metrics
+      - For product objects → sales/quantity metrics
+      - For support objects → priority or recency
+   Step 4: If multiple valid options exist, choose the most contextually relevant
+   Step 5: If truly ambiguous → Ask for clarification
    
-   Examples:
-   - "top 5 opportunities" → Check schema → Amount found → ORDER BY Amount DESC LIMIT 5
-   - "top students" → Check schema → GPA__c found → ORDER BY GPA__c DESC LIMIT 10
-   - "best products" → Check schema → Revenue__c or Units_Sold__c → ORDER BY [chosen field] DESC
+   **Use linguistic context clues:**
+   - "top revenue" → explicitly states the ranking field
+   - "best performing" → look for performance/score fields
+   - "highest value" → look for value/amount/price fields
+   - "most urgent" → look for priority or date fields
+   - "top" alone → infer from object type and available fields
+   
+   The goal is to think like a human analyst would: "What would logically make these records rank higher than others?"
 
 3. **FILTER REASONING - Understand Intent:**
-   When user asks about status or state:
-   - "open" → Typically IsClosed = false OR Status != 'Closed'
-   - "active" → Typically IsActive = true OR Status = 'Active'
-   - "my" → OwnerId = '${userId}'
-   - "today/this week/this month" → Use date literals on appropriate date field
+   When user describes record state or condition:
    
-   Dynamic Status Detection:
-   - Check if object has IsClosed field → use that
-   - Check if object has Status field → examine picklist values
-   - Check if object has IsActive field → use that
-   - For custom objects → look for *Status*, *Active*, *Closed* pattern fields
+   **Use semantic understanding, not pattern matching:**
+   
+   - Analyze what the user is asking for conceptually
+   - Map their intent to available fields in the schema
+   - Consider domain-specific meanings
+   
+   Examples of reasoning process:
+   
+   User says "open records":
+   → Think: "What makes a record 'open' in this domain?"
+   → Check schema for: IsClosed field, Status field, State field
+   → Choose the appropriate field based on object type
+   
+   User says "active accounts":
+   → Think: "What indicates an account is 'active'?"
+   → Check schema for: IsActive field, Status field, LastActivityDate
+   → Choose based on available fields and business logic
+   
+   User says "my records":
+   → Think: "What defines ownership?"
+   → Check schema for: OwnerId field, CreatedById, AssignedTo__c
+   → Use OwnerId if available (standard), otherwise check for custom ownership fields
+   
+   **The principle:** Understand what the user means, then find the appropriate field(s) to express that in SOQL.
 
 4. **RELATIONSHIP REASONING - Infer Connections:**
    When user mentions related objects:
@@ -111,29 +130,71 @@ export function buildSOQLPrompt(question, schemaText, objectFieldsList, conversa
    - Suggest relationship fields when user asks for "related" or "with"
 
 5. **AGGREGATION REASONING - Contextual Grouping:**
-   When user asks "count by" or "total by":
-   - Identify the grouping field (typically picklist or lookup)
-   - Identify the aggregation field (typically numeric/currency)
-   - Common patterns:
-     * "by stage" → GROUP BY StageName
-     * "by owner" → GROUP BY OwnerId
-     * "by account" → GROUP BY AccountId
-     * "by region/state" → GROUP BY State or Region__c
-     * For custom objects → look for picklist and reference fields
+   When user asks for aggregated views:
+   
+   **Think about the business question being asked:**
+   
+   User asks "count by stage":
+   → Reasoning: "They want to see distribution across stages"
+   → Look for: Fields that represent categories or groupings (picklists, lookups)
+   → For "stage": Check for StageName, Stage__c, or similar
+   → Result: GROUP BY [stage field]
+   
+   User asks "total by account":
+   → Reasoning: "They want to see aggregated values per account"
+   → Look for: Lookup to Account (AccountId) and numeric field to sum
+   → Result: GROUP BY AccountId, potentially include Account.Name
+   
+   User asks "average performance by region":
+   → Reasoning: "They want regional performance comparison"
+   → Look for: Regional grouping field (Region__c, Territory__c) and performance metric
+   → Result: GROUP BY [region field], AVG([performance field])
+   
+   **The principle:** Understand the analytical question, identify the dimension (GROUP BY) and the metric (aggregation function).
 
 6. **DATE FIELD REASONING:**
-   When user mentions time:
-   - "created" → Use CreatedDate
-   - "updated/modified" → Use LastModifiedDate
-   - "closed" → Use CloseDate (if exists)
-   - "due" → Use ActivityDate or DueDate
-   - For custom objects → look for fields with Date/DateTime type
+   When user mentions temporal concepts:
+   
+   **Map temporal language to appropriate date fields:**
+   
+   - Understand what time aspect the user cares about
+   - Different date fields represent different business events
+   - Choose the field that matches the user's intent
+   
+   Examples of reasoning:
+   
+   User says "recently created":
+   → Intent: When the record came into existence
+   → Field: CreatedDate
+   
+   User says "recently updated" or "recently modified":
+   → Intent: When the record was last changed
+   → Field: LastModifiedDate
+   
+   User says "closing soon" (for Opportunities):
+   → Intent: When the deal is expected to close
+   → Field: CloseDate
+   
+   User says "due this week" (for Tasks):
+   → Intent: When the task should be completed
+   → Field: ActivityDate or DueDate
+   
+   For custom objects, analyze available date fields and match to user intent based on field names and context.
 
 7. **ADDRESS HANDLING:**
-   Dynamically determine address type:
-   - Account → Prefer Billing, fallback to Shipping
-   - Contact/Lead → Prefer Mailing, fallback to Other
-   - Custom objects → Check schema for *Street, *City, *State patterns
+   When user asks about location or address:
+   
+   **Understand the address context for each object:**
+   
+   - Different objects have different types of addresses for different purposes
+   - Choose the address type that makes semantic sense
+   
+   Reasoning process:
+   - Account: Usually Billing (primary business address) unless user specifies Shipping
+   - Contact/Lead: Usually Mailing (personal correspondence) unless context suggests otherwise
+   - Custom objects: Examine available address fields and infer primary use
+   
+   If user asks generically for "address", include the most relevant Street, City, State, PostalCode fields for that object's primary address type.
 
 1. FIELD SELECTION:
    ❌ NEVER: SELECT *
@@ -179,14 +240,28 @@ export function buildSOQLPrompt(question, schemaText, objectFieldsList, conversa
    - WhatId → Account, Opportunity, Case (things) - prefix 001, 006, or 500
    - ✅ Query both: SELECT WhoId, Who.Name, WhatId, What.Name FROM Task
    - ✅ Use Who.Type and What.Type to identify object type
-   - For "client" questions: include BOTH Who and What (client could be either)
    
-   **CRITICAL: Task/Event CANNOT be used in WHERE IN subqueries**
+   **CRITICAL LIMITATION: Polymorphic relationship fields have limited traversal**
    
-   Polymorphic Query Examples:
-   - "task for account": SELECT Id, Subject, WhatId, What.Name FROM Task WHERE WhatId != null AND WhatId LIKE '001%' LIMIT 5
-   - "task for contact": SELECT Id, Subject, WhoId, Who.Name FROM Task WHERE WhoId != null AND WhoId LIKE '003%' LIMIT 5
-   - "client for task [ID]": SELECT Id, WhoId, Who.Name, Who.Type, WhatId, What.Name, What.Type FROM Task WHERE Id = '[specific task ID]'
+   ❌ CANNOT ACCESS: What.Industry, What.BillingCity, What.Amount (object-specific fields)
+   ✅ CAN ACCESS: What.Name, What.Type, What.Id (generic fields available on all objects)
+   ❌ CANNOT ACCESS: Who.Email, Who.Phone, Who.Title (object-specific fields)
+   ✅ CAN ACCESS: Who.Name, Who.Type, Who.Id (generic fields available on all objects)
+   
+   **Why this limitation exists:**
+   What/Who can point to different object types, so you can only access fields that exist on ALL possible target objects.
+   
+   **Correct polymorphic queries:**
+   - "task for account": SELECT Id, Subject, WhatId, What.Name, What.Type FROM Task WHERE WhatId LIKE '001%' LIMIT 5
+   - "client for task [ID]": SELECT Id, WhoId, Who.Name, Who.Type, WhatId, What.Name, What.Type FROM Task WHERE Id = '[ID]'
+   
+   **To get full object details, use two-step approach:**
+   
+   Step 1: Get the related object ID
+   SELECT Id, Subject, WhatId, What.Name, What.Type FROM Task WHERE Id = '[task_id]'
+   
+   Step 2: If What.Type = 'Account' and you need more details:
+   SELECT Id, Name, Industry, BillingCity FROM Account WHERE Id = '[extracted_what_id]'
    
    **CONVERSATION CONTEXT - Follow-up Questions:**
    
@@ -197,21 +272,14 @@ export function buildSOQLPrompt(question, schemaText, objectFieldsList, conversa
    ❌ WRONG: SELECT Id, Name FROM Account WHERE Id IN (SELECT WhatId FROM Task WHERE ...)
    ❌ ERROR: "Entity 'Task' is not supported for semi join inner selects"
    
-   ✅ CORRECT Approaches:
+   ❌ WRONG: SELECT What.Industry, What.BillingCity FROM Task WHERE Id = 'xxx'
+   ❌ ERROR: "No such column 'Industry' on entity 'Name'"
    
-   Option 1: Use relationship traversal directly
-   SELECT Id, Subject, What.Id, What.Name, What.Type, What.Industry FROM Task WHERE Id = '[task_id]'
-   (This gives you account details in one query via What.* fields)
+   ✅ CORRECT: Two-step approach
+   Step 1: SELECT WhatId, What.Type FROM Task WHERE Id = '[task_id]'
+   Step 2: SELECT Id, Name, Industry, BillingCity FROM Account WHERE Id = '[result_what_id]'
    
-   Option 2: Two-step explanation
-   Respond: "From the previous task, the WhatId is [ID] linking to [Account Name]. To get full account details:"
-   Then: SELECT Id, Name, Industry, BillingCity, BillingState FROM Account WHERE Id = '[extracted_what_id]'
-   
-   Option 3: If you have the task ID from context
-   First query: SELECT WhatId FROM Task WHERE Id = '[task_id]'
-   Then use the result: SELECT Id, Name, Industry FROM Account WHERE Id = '[result_what_id]'
-   
-   **Key Point:** Never try to use Task/Event as the inner SELECT in a WHERE IN clause
+   OR respond: "The task is related to [What.Name] (ID: [WhatId]). To get full details, I'll query the account directly."
 
 5. USER CONTEXT:
    - Current User ID: '${userId}'
@@ -562,27 +630,42 @@ Relationships:
 "contacts and their account info"
 → SELECT Id, Name, Email, Account.Name, Account.BillingCity FROM Contact WHERE AccountId != null LIMIT 10
 
-Object Switching (Respecting Semi-Join Limitations):
-"account details for these contacts"
-→ SELECT Id, Name, BillingCity, BillingState FROM Account WHERE Id IN (SELECT AccountId FROM Contact LIMIT 5)
-   (Contact CAN be used in semi-join)
+Conversation Context Examples:
+Q1: "Give me top 5 Cases"
+→ SELECT Id, CaseNumber, Subject, Status, Priority FROM Case ORDER BY CreatedDate DESC LIMIT 5
 
-"accounts with opportunities"
-→ SELECT Id, Name FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity)
-   (Opportunity CAN be used in semi-join)
+Q2: "Tell me the owner of these cases as well"
+→ Reasoning: Anaphoric reference "these cases" refers to the 5 cases just returned. User wants MORE info about SAME records.
+→ SELECT Id, CaseNumber, Subject, Status, Priority, OwnerId, Owner.Name, Owner.Email FROM Case ORDER BY CreatedDate DESC LIMIT 5
+   (Same WHERE/ORDER BY/LIMIT, added Owner fields)
 
-"contacts with open cases"
-→ SELECT Id, Name, Email FROM Contact WHERE Id IN (SELECT ContactId FROM Case WHERE IsClosed = false)
-   (Case CAN be used in semi-join)
+Q3: "I don't see owner name here"
+→ Reasoning: Still discussing the same Case records. This is a clarification about fields, not a new query request.
+→ Response: Explain that Owner.Name field should be included in the query results. Stay on Case object.
 
-"accounts related to my tasks" 
-→ ❌ CANNOT USE: SELECT Id, Name FROM Account WHERE Id IN (SELECT WhatId FROM Task WHERE OwnerId = 'xxx')
-→ ✅ INSTEAD USE: SELECT Id, Subject, WhatId, What.Name, What.Industry FROM Task WHERE OwnerId = 'xxx' AND WhatId LIKE '001%'
-   (Query Task directly with relationship fields)
+Context Shift Recognition:
+Q1: "Show top 5 opportunities"
+→ SELECT Id, Name, Amount FROM Opportunity ORDER BY Amount DESC LIMIT 5
 
-"show account for task [ID]"
-→ SELECT Id, Subject, What.Id, What.Name, What.Industry, What.BillingCity FROM Task WHERE Id = '[task_id]'
-   (Get account details via What.* relationship, not semi-join)
+Q2: "Now show me cases"
+→ Reasoning: Explicit new subject "cases" introduced with transition word "now". Clear context switch.
+→ SELECT Id, CaseNumber, Subject, Status FROM Case LIMIT 10
+
+Q3: "Show owners"
+→ Reasoning: Subject continuity - no explicit new subject mentioned. Implicitly referring to most recent query (Cases).
+→ SELECT Id, CaseNumber, Subject, Status, Owner.Name FROM Case LIMIT 10
+
+Modification vs Replacement:
+Q1: "top 5 opportunities"
+→ SELECT Id, Name, Amount FROM Opportunity ORDER BY Amount DESC LIMIT 5
+
+Q2: "show owner names too"
+→ Reasoning: "too" indicates addition. User wants supplementary information.
+→ SELECT Id, Name, Amount, Owner.Name FROM Opportunity ORDER BY Amount DESC LIMIT 5
+
+Q3: "show me closed opportunities"
+→ Reasoning: New constraint introduced. This is a replacement query, not a modification.
+→ SELECT Id, Name, Amount, StageName FROM Opportunity WHERE IsClosed = true LIMIT 10
 
 Aggregations (Dynamic Grouping):
 "count opportunities by stage"
@@ -691,6 +774,85 @@ ${schemaText}
 ${objectFieldsList}
 ${relationshipReference}
 ${conversationContext}
+
+=== CONVERSATION CONTEXT RULES ===
+
+**CRITICAL: Maintain context of the current conversation topic**
+
+When processing follow-up questions, you MUST:
+
+1. **Identify the subject of the previous query:**
+   - Look at the last SOQL query executed
+   - Identify which object was queried (Case, Opportunity, Account, etc.)
+   - Remember what specific records were returned
+
+2. **Interpret "these", "those", "above", "them" correctly:**
+   - "these cases" = the Case records from the previous query
+   - "those opportunities" = the Opportunity records from the previous query
+   - "above tasks" = the Task records from the previous query
+   - "owner of these" = Owner field of the SAME object just queried
+
+3. **DO NOT switch objects unless explicitly asked:**
+   
+   Example Scenario 1:
+   Q1: "Give me top 5 Cases"
+   Response: SELECT Id, CaseNumber, Subject, Status, Priority FROM Case ORDER BY CreatedDate DESC LIMIT 5
+   
+   Q2: "Tell me the owner of these cases as well"
+   ❌ WRONG: SELECT Id, Name FROM Case WHERE OwnerId = '${userId}'
+   ✅ CORRECT: SELECT Id, CaseNumber, Subject, Status, Priority, OwnerId, Owner.Name, Owner.Email FROM Case ORDER BY CreatedDate DESC LIMIT 5
+   
+   Reasoning: "these cases" refers to the SAME 5 cases from Q1, just adding Owner fields
+   
+   Q3: "I don't see owner name here, why?"
+   ✅ CORRECT: Explain that Owner.Name should be in the results, don't switch to a different object
+   
+   Example Scenario 2:
+   Q1: "Show me top 5 opportunities"
+   Response: SELECT Id, Name, Amount, StageName FROM Opportunity ORDER BY Amount DESC LIMIT 5
+   
+   Q2: "Give me top 5 cases"
+   Response: SELECT Id, CaseNumber, Subject, Status FROM Case ORDER BY CreatedDate DESC LIMIT 5
+   
+   Q3: "Show me owners of these"
+   ✅ CORRECT: "these" refers to Cases (most recent query), not Opportunities
+   Response: SELECT Id, CaseNumber, Subject, Status, Owner.Name, Owner.Email FROM Case ORDER BY CreatedDate DESC LIMIT 5
+
+4. **When user asks to "add" or "include" fields:**
+   - Keep the SAME WHERE clause
+   - Keep the SAME ORDER BY
+   - Keep the SAME LIMIT
+   - Just add the requested fields to SELECT
+   
+   Q1: "top 5 opportunities"
+   → SELECT Id, Name, Amount FROM Opportunity ORDER BY Amount DESC LIMIT 5
+   
+   Q2: "show owner names too"
+   → SELECT Id, Name, Amount, Owner.Name FROM Opportunity ORDER BY Amount DESC LIMIT 5
+   (Same 5 opportunities, just added Owner.Name)
+
+5. **Explicit object switches:**
+   Only switch objects when user explicitly mentions a DIFFERENT object:
+   - "Now show me cases" = switch to Case
+   - "What about contacts?" = switch to Contact
+   - "Give me opportunities instead" = switch to Opportunity
+   
+   But these DON'T switch objects:
+   - "show owner" = add Owner field to CURRENT object
+   - "these records" = CURRENT object
+   - "include more details" = add fields to CURRENT object
+
+6. **Track conversation state:**
+   - Current Object: [Object from last query]
+   - Last Query: [Full SOQL]
+   - Last Results Count: [Number of records]
+   - User Intent: [What they're trying to accomplish]
+
+**BEFORE GENERATING A QUERY, ASK YOURSELF:**
+- What object was queried last?
+- Is the user asking about the SAME records or DIFFERENT records?
+- Are they asking to ADD fields or SWITCH objects?
+- Does "these/those/them" refer to the last query results?
 
 === QUESTION ===
 ${question}
