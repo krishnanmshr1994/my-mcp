@@ -1,7 +1,17 @@
 import express from 'express';
 import cors from 'cors';
 import jsforce from 'jsforce';
-import { buildSOQLPrompt, getSummarizeSystemPrompt, getCalculationPrompt, getExplanationPrompt, getChatSystemPrompt, getErrorAnalysisPrompt } from './prompts.js';
+import { 
+  buildSOQLPrompt, 
+  getSummarizeSystemPrompt, 
+  getCalculationPrompt, 
+  getExplanationPrompt, 
+  getChatSystemPrompt, 
+  getErrorAnalysisPrompt,
+  getRelatedQueryPrompt,
+  extractConversationContext,
+  suggestRelationshipField
+} from './prompts.js';
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -340,11 +350,23 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
   let conversationContext = '';
   if (conversationHistory.length > 0 && isReferencingPrevious && !isNewQuery) {
     conversationContext = '\n\n=== PREVIOUS CONVERSATION CONTEXT ===\n';
-    conversationHistory.slice(-2).forEach((msg, idx) => {
+    
+    // Show all relevant queries with clear markers
+    conversationHistory.forEach((msg, idx) => {
+      const isLastQuery = idx === conversationHistory.length - 1;
+      const objectFromQuery = msg.soql.match(/FROM\s+(\w+)/i);
+      const objectName = objectFromQuery ? objectFromQuery[1] : 'Unknown';
+      
       conversationContext += `\n${idx + 1}. User asked: "${msg.question}"\n`;
+      conversationContext += `   Object: ${objectName}\n`;
       conversationContext += `   SOQL: ${msg.soql}\n`;
       if (msg.recordCount) {
         conversationContext += `   Records found: ${msg.recordCount}\n`;
+      }
+      
+      // Explicit marker for which is the current/most recent
+      if (isLastQuery) {
+        conversationContext += `   ✅ *** THIS IS THE CURRENT/MOST RECENT QUERY ***\n`;
       }
       
       const idMatch = msg.soql.match(/WHERE\s+Id\s*=\s*'([^']+)'/i);
@@ -354,22 +376,33 @@ async function generateSOQLWithContext(question, objectHint, conversationHistory
       conversationContext += '\n';
     });
     
-    conversationContext += `\n🎯 CONTEXT: User is referring to the LAST query (Object: ${previousObject}).\n\n`;
+    conversationContext += `\n🎯 CRITICAL CONTEXT: User is referring to records from the LAST/CURRENT query.\n`;
+    conversationContext += `🎯 WORKING OBJECT: ${previousObject}\n`;
+    conversationContext += `🎯 WORKING RECORDS: Use IDs from the CURRENT query (${previousObject}), NOT from older queries.\n\n`;
     
     if (isAddingFields) {
       conversationContext += '⚠️ USER WANTS TO ADD/SHOW MORE FIELDS from SAME records:\n';
-      conversationContext += `- Keep SAME object: ${previousObject}\n`;
+      conversationContext += `✅ MUST KEEP: Object type = ${previousObject} (DO NOT CHANGE TO OTHER OBJECT)\n`;
+      conversationContext += `✅ MUST KEEP: Same WHERE conditions from the CURRENT query\n`;
+      conversationContext += `✅ MUST KEEP: Same LIMIT if it exists\n`;
+      conversationContext += `❌ DO NOT: Switch to a different object (like switching from Case to Task)\n`;
+      conversationContext += `❌ DO NOT: Use IDs from earlier queries - use IDs from the CURRENT query only\n\n`;
+      
       if (previousLimit) {
-        conversationContext += `- Keep SAME LIMIT: ${previousLimit}\n`;
+        conversationContext += `- Current LIMIT: ${previousLimit}\n`;
       }
       if (previousWhereClause) {
-        conversationContext += `- Keep SAME WHERE clause: ${previousWhereClause}\n`;
+        conversationContext += `- Current WHERE clause: ${previousWhereClause}\n`;
         
         const idInWhere = previousWhereClause.match(/Id\s*=\s*'([^']+)'/i);
         if (idInWhere) {
           conversationContext += `- ⚠️ USE THIS EXACT ID: ${idInWhere[1]}\n`;
         }
       }
+      
+      conversationContext += '\n⚡ ACTION: Add the requested fields to the SELECT list, but keep everything else the same.\n';
+      conversationContext += `⚡ EXAMPLE: If previous was SELECT Id, Name FROM ${previousObject} WHERE ...\n`;
+      conversationContext += `⚡ NEW: SELECT Id, Name, [NewFields] FROM ${previousObject} WHERE [SAME_CONDITIONS]\n\n`;
       
       // If asking for related data from different object
       if (isDifferentObject && previousRecordIds.length > 0) {
@@ -1022,6 +1055,10 @@ app.post('/smart-query', async (req, res) => {
 
       const llmData = await llmRes.json();
 
+      // Extract the object name from the SOQL query for conversation tracking
+      const objectMatch = healingResult.soql.match(/FROM\s+(\w+)/i);
+      const objectName = objectMatch ? objectMatch[1] : 'Unknown';
+
       return res.json({
         question,
         soql: healingResult.soql,
@@ -1031,7 +1068,9 @@ app.post('/smart-query', async (req, res) => {
         response: `Found ${healingResult.recordCount} records`,
         healed: healingResult.healed,
         attempts: healingResult.attempts,
-        errorHistory: healingResult.errorHistory
+        errorHistory: healingResult.errorHistory,
+        results: healingResult.data.records,  // Include results for conversation history
+        objectQueried: objectName  // ⭐ IMPORTANT: Tells client which object was queried
       });
     }
 

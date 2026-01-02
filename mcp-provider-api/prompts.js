@@ -32,6 +32,8 @@ export function buildSOQLPrompt(question, schemaText, objectFieldsList, conversa
 
   // Build relationship reference for key objects
   let relationshipReference = '';
+  const relationshipPatterns = new Map();
+  
   if (enrichedSchema && enrichedSchema.relationships && Object.keys(enrichedSchema.relationships).length > 0) {
     relationshipReference = '\n=== OBJECT RELATIONSHIPS & LOOKUP FIELDS ===\n';
     Object.entries(enrichedSchema.relationships).forEach(([objName, data]) => {
@@ -41,11 +43,22 @@ export function buildSOQLPrompt(question, schemaText, objectFieldsList, conversa
         lookupFields.forEach(field => {
           if (field && field.QualifiedApiName && field.DataType) {
             relationshipReference += `  - ${field.QualifiedApiName} (${field.DataType})\n`;
+            // Track for smart relationship inference
+            relationshipPatterns.set(`${objName}.${field.QualifiedApiName}`, field);
           }
         });
       }
     });
   }
+
+  // Add common relationship patterns for clarity
+  relationshipReference += '\n=== COMMON RELATIONSHIP PATTERNS ===\n';
+  relationshipReference += `Task/Event → Contact: Task.WhoId (polymorphic, but 0031/001 prefix = Contact/Account)\n`;
+  relationshipReference += `Task/Event → Account: Task.WhatId (polymorphic, but 001 prefix = Account)\n`;
+  relationshipReference += `Case → Account: Case.AccountId (standard lookup)\n`;
+  relationshipReference += `Case → Contact: Case.ContactId (standard lookup)\n`;
+  relationshipReference += `Opportunity → Account: Opportunity.AccountId (standard lookup)\n`;
+  relationshipReference += `Contact → Account: Contact.AccountId (standard lookup)\n`;
 
   return `You are a Salesforce SOQL expert. Generate VALID, EXECUTABLE SOQL queries.
 
@@ -1605,4 +1618,200 @@ ${JSON.stringify(userPreferences, null, 2)}
   contextPrompt += `Generate the most accurate SOQL query considering all context above.`;
 
   return contextPrompt;
+}
+
+/**
+ * Relationship-aware prompt - for "related", "associated", "connected" queries
+ * Helps LLM understand context from conversation history and infer relationships
+ * @param {string} question - User's question about related records
+ * @param {string} sourceObject - The object we're coming FROM (e.g., Task from previous query)
+ * @param {array} sourceRecordIds - IDs from the previous query result
+ * @param {string} targetObject - The object we're going TO (e.g., Account)
+ * @param {string} schemaText - Available schema
+ * @returns {string} Prompt for generating relationship-aware SOQL
+ */
+export function getRelatedQueryPrompt(question, sourceObject, sourceRecordIds, targetObject, schemaText) {
+  return `You are a Salesforce SOQL expert specializing in relationship queries.
+
+=== CONTEXT ===
+User's current question: "${question}"
+
+CONVERSATION HISTORY:
+- Previous object queried: ${sourceObject}
+- Previous records retrieved: ${sourceRecordIds.length} records
+- Record IDs available: ${sourceRecordIds.slice(0, 5).map(id => \`'\${id}'\`).join(', ')}${sourceRecordIds.length > 5 ? ', ...' : ''}
+- Current query target: ${targetObject}
+
+=== RELATIONSHIP MAPPING RULES ===
+
+**Critical Rule**: When user says "show me related X" or "get the X for these records", ALWAYS:
+
+1. **Identify the lookup field** connecting sourceObject to targetObject:
+   
+   Task/Event → Account: USE Task.WhatId (filter WHERE WhatId LIKE '001%' AND WhatId IN (IDs))
+   Task/Event → Contact: USE Task.WhoId (filter WHERE WhoId LIKE '003%' AND WhoId IN (IDs))
+   Case → Account: USE Case.AccountId (filter WHERE AccountId IN (IDs))
+   Case → Contact: USE Case.ContactId (filter WHERE ContactId IN (IDs))
+   Opportunity → Account: USE Opportunity.AccountId (filter WHERE AccountId IN (IDs))
+   Contact → Account: USE Contact.AccountId (filter WHERE AccountId IN (IDs))
+
+2. **Use the record IDs from previous query**:
+   
+   EXAMPLE:
+   Source: Task with IDs: ['00TGA00003fTAL32AO', '00TGA00003fTAL32AQ']
+   Target: Account
+   
+   ✅ CORRECT:
+   SELECT Id, Name, BillingCity FROM Account 
+   WHERE Id IN (SELECT WhatId FROM Task WHERE WhatId LIKE '001%' AND Id IN ('00TGA00003fTAL32AO', '00TGA00003fTAL32AQ'))
+   
+   ❌ WRONG - Missing object check:
+   SELECT Id, Name FROM Account 
+   WHERE Id IN (SELECT WhatId FROM Task WHERE Id IN ('00TGA00003fTAL32AO', '00TGA00003fTAL32AQ'))
+   
+   ❌ WRONG - Hardcoded IDs instead of using provided ones:
+   SELECT Id, Name FROM Account 
+   WHERE Id IN (SELECT WhatId FROM Task WHERE WhatId LIKE '001%')
+
+3. **For polymorphic fields** (like WhoId, WhatId):
+   
+   - WhoId can point to Contact (3-char prefix: 003) or Lead (00Q)
+   - WhatId can point to Account (001), Opportunity (006), Custom objects, etc.
+   - ALWAYS filter by prefix or type to get correct object
+   
+   Example filters:
+   - WHERE WhoId LIKE '003%' → Only Contacts
+   - WHERE WhatId LIKE '001%' → Only Accounts
+   - WHERE WhatId NOT LIKE '001%' AND WhatId NOT LIKE '006%' → Exclude Accounts and Opportunities
+
+4. **Handle edge cases**:
+   
+   If source records might be null (e.g., some Tasks have no Account):
+   Use: WHERE WhatId IN (...) AND WhatId != null
+   
+   If accessing parent object with child records:
+   Use: SELECT Id, Name FROM ${targetObject} WHERE Id IN (SELECT [lookupId] FROM ${sourceObject} WHERE Id IN (...))
+
+=== AVAILABLE SCHEMA ===
+${schemaText}
+
+=== YOUR TASK ===
+1. Identify the correct lookup field from ${sourceObject} to ${targetObject}
+2. Generate a SOQL query that uses the provided record IDs
+3. Include relevant fields for ${targetObject}
+4. Handle polymorphic fields correctly if needed
+5. Ensure the query will return related records
+
+Generate the SOQL query. Only output the query, no explanations.`;
+}
+
+/**
+ * Context extraction helper - analyzes conversation history for smart context
+ * Returns structured context information for relationship building
+ * @param {array} conversationHistory - Array of previous queries
+ * @returns {object} Extracted context with relationships and patterns
+ */
+export function extractConversationContext(conversationHistory) {
+  if (!conversationHistory || conversationHistory.length === 0) {
+    return {
+      isEmpty: true,
+      objects: [],
+      lastObject: null,
+      relationships: [],
+      objectSequence: []
+    };
+  }
+
+  const objects = [];
+  const objectSequence = [];
+  const relationships = [];
+  const recordIdMap = new Map();
+
+  // Analyze each query in history
+  conversationHistory.forEach((entry, idx) => {
+    const obj = entry.objectQueried || extractObjectFromSOQL(entry.soql);
+    if (obj) {
+      objectSequence.push(obj);
+      
+      if (!objects.includes(obj)) {
+        objects.push(obj);
+      }
+
+      // Track record IDs per object
+      if (entry.results && Array.isArray(entry.results)) {
+        const ids = entry.results.map(r => r.Id).filter(Boolean);
+        recordIdMap.set(obj, ids);
+      }
+
+      // Detect relationships between consecutive objects
+      if (idx > 0) {
+        const prevObj = objectSequence[idx - 1];
+        if (prevObj !== obj) {
+          relationships.push({
+            from: prevObj,
+            to: obj,
+            queryIndex: idx,
+            direction: 'new_object'
+          });
+        }
+      }
+    }
+  });
+
+  return {
+    isEmpty: false,
+    objects,
+    objectSequence,
+    relationships,
+    lastObject: objectSequence[objectSequence.length - 1],
+    recordIdMap,
+    conversationLength: conversationHistory.length,
+    isRelatedQuery: relationships.length > 0 && objectSequence.length > 1
+  };
+}
+
+/**
+ * Helper function to extract object name from SOQL query
+ * @param {string} soql - SOQL query string
+ * @returns {string} Object name or null
+ */
+function extractObjectFromSOQL(soql) {
+  const match = soql.match(/FROM\s+(\w+)/i);
+  return match ? match[1] : null;
+}
+
+/**
+ * Suggest relationship field - intelligently suggests which lookup field to use
+ * @param {string} sourceObject - Object we're coming from
+ * @param {string} targetObject - Object we're going to
+ * @returns {string} Suggested field name or null
+ */
+export function suggestRelationshipField(sourceObject, targetObject) {
+  const relationshipMap = {
+    'Task': {
+      'Account': 'WhatId',
+      'Contact': 'WhoId',
+      'Opportunity': 'WhatId'
+    },
+    'Event': {
+      'Account': 'WhatId',
+      'Contact': 'WhoId',
+      'Opportunity': 'WhatId'
+    },
+    'Case': {
+      'Account': 'AccountId',
+      'Contact': 'ContactId'
+    },
+    'Opportunity': {
+      'Account': 'AccountId'
+    },
+    'Contact': {
+      'Account': 'AccountId'
+    },
+    'Lead': {
+      'Company': 'Company__c'  // Custom field example
+    }
+  };
+
+  return relationshipMap[sourceObject]?.[targetObject] || null;
 }

@@ -76,18 +76,182 @@ export default class JarvisChatbot extends LightningElement {
             containerClass: 'bot-container', bubbleClass: 'bot-bubble',
             hasExplanation: !!data.explanation, explanation: data.explanation,
             showExplanation: false, toggleLabel: 'Why use this?',
-            hasRecords: hasRecs
+            hasRecords: hasRecs,
+            objectQueried: data.objectQueried,  // Track object for conversation history
+            soql: data.soql,                    // Track SOQL for reference
+            recordCount: data.recordCount,      // Track count
+            childRecordTables: []               // Track child record tables
         };
 
         if (hasRecs) {
             msg.rawRecords = data.data.records;
-            msg.columns = Object.keys(data.data.records[0]).filter(k => k !== 'attributes').map(k => ({ label: k, fieldName: k }));
+            
+            // Extract columns - handle both simple and related fields (e.g., Account.Name)
+            const firstRecord = data.data.records[0];
+            const columnInfo = this.extractColumnsWithChildren(firstRecord);
+            msg.columns = columnInfo.parentColumns;
+            msg.childRecordTables = columnInfo.childTables;
+            
+            // Extract field values - handle nested/related fields properly
             msg.records = data.data.records.map((r, i) => ({
                 Id: r.Id || i,
-                fields: msg.columns.map(c => ({ label: c.label, value: String(r[c.fieldName]) }))
+                fields: msg.columns.map(c => ({ 
+                    label: c.label, 
+                    value: this.getNestedFieldValue(r, c.fieldName),
+                    fieldName: c.fieldName
+                })),
+                // Store child records for display
+                childRecords: this.extractChildRecords(r, columnInfo.childTables)
             }));
         }
+        
+        // Add to conversation history for next queries
+        this.conversationHistory = [...this.conversationHistory, {
+            question: msg.text,
+            soql: data.soql,
+            objectQueried: data.objectQueried,
+            recordCount: data.recordCount,
+            results: data.data?.records || []
+        }];
+        
         this.messages = [...this.messages, msg];
+    }
+
+    // Helper: Extract columns AND identify child record collections
+    extractColumnsWithChildren(record) {
+        const parentColumns = [];
+        const childTables = [];
+        
+        const processField = (key, prefix = '') => {
+            if (key === 'attributes') return;
+            
+            const value = record[key];
+            
+            // Check if this is a child records collection
+            if (Array.isArray(value) && value.length > 0 && value[0]?.attributes) {
+                // This is a child records array (e.g., Contacts, Cases, CaseComments)
+                const childColumns = [];
+                const firstChildRecord = value[0];
+                
+                Object.keys(firstChildRecord).forEach(childKey => {
+                    if (childKey !== 'attributes' && typeof firstChildRecord[childKey] !== 'object') {
+                        childColumns.push({
+                            label: childKey.charAt(0).toUpperCase() + childKey.slice(1),
+                            fieldName: childKey
+                        });
+                    }
+                });
+                
+                if (childColumns.length > 0) {
+                    childTables.push({
+                        relationshipName: key,
+                        label: `${key} (${value.length})`,
+                        columns: childColumns,
+                        records: value
+                    });
+                }
+                return;
+            }
+            
+            // Handle nested objects (e.g., Account, Who, What)
+            if (value && typeof value === 'object' && !Array.isArray(value) && value.attributes) {
+                // This is a related object, extract its fields
+                Object.keys(value).forEach(nestedKey => {
+                    if (nestedKey !== 'attributes') {
+                        const fieldName = `${key}.${nestedKey}`;
+                        const label = `${key} ${nestedKey}`;
+                        parentColumns.push({ label, fieldName });
+                    }
+                });
+            } else if (typeof value !== 'object' || Array.isArray(value)) {
+                // Simple field (but skip arrays)
+                if (!Array.isArray(value)) {
+                    parentColumns.push({ label: key, fieldName: key });
+                }
+            }
+        };
+        
+        Object.keys(record).forEach(key => processField(key));
+        return { parentColumns, childTables };
+    }
+
+    // Helper: Extract child records for a parent record
+    extractChildRecords(record, childTables) {
+        const childRecords = {};
+        
+        childTables.forEach(childTable => {
+            const relationshipData = record[childTable.relationshipName];
+            if (Array.isArray(relationshipData)) {
+                childRecords[childTable.relationshipName] = {
+                    label: childTable.label,
+                    columns: childTable.columns,
+                    records: relationshipData.map((childRec, idx) => ({
+                        Id: childRec.Id || idx,
+                        fields: childTable.columns.map(col => ({
+                            label: col.label,
+                            value: this.getNestedFieldValue(childRec, col.fieldName),
+                            fieldName: col.fieldName
+                        }))
+                    }))
+                };
+            }
+        });
+        
+        return childRecords;
+    }
+
+    // Helper: Extract columns from record, handling nested fields
+    extractColumns(record) {
+        const columns = [];
+        
+        const processField = (key, prefix = '') => {
+            if (key === 'attributes') return;
+            
+            const value = record[key];
+            
+            // Handle nested objects (e.g., Account, Who, What)
+            if (value && typeof value === 'object' && !Array.isArray(value) && value.attributes) {
+                // This is a related object, extract its fields
+                Object.keys(value).forEach(nestedKey => {
+                    if (nestedKey !== 'attributes') {
+                        const fieldName = `${key}.${nestedKey}`;
+                        const label = `${key} ${nestedKey}`;
+                        columns.push({ label, fieldName });
+                    }
+                });
+            } else if (typeof value !== 'object' || Array.isArray(value)) {
+                // Simple field
+                columns.push({ label: key, fieldName: key });
+            }
+        };
+        
+        Object.keys(record).forEach(key => processField(key));
+        return columns;
+    }
+
+    // Helper: Get value from nested field path (e.g., "Account.Name" or "Who.Name")
+    getNestedFieldValue(record, fieldPath) {
+        if (!fieldPath) return '';
+        
+        // Handle nested fields like "Account.Name", "Who.Name", "What.Name"
+        if (fieldPath.includes('.')) {
+            const parts = fieldPath.split('.');
+            let value = record;
+            
+            for (const part of parts) {
+                if (value && typeof value === 'object') {
+                    value = value[part];
+                } else {
+                    return ''; // Path doesn't exist
+                }
+            }
+            
+            return value ? String(value) : '';
+        }
+        
+        // Simple field
+        const value = record[fieldPath];
+        return value ? String(value) : '';
     }
 
     handleToggleExplanation(event) {
