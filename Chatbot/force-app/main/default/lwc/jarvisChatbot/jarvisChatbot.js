@@ -54,45 +54,54 @@ export default class JarvisChatbot extends LightningElement {
         this.userInput = '';
         this.messages = [...this.messages, { id: Date.now(), text: txt, containerClass: 'user-container', bubbleClass: 'user-bubble' }];
         this.isLoading = true;
-
+        const isSmartQuery = this.selectedFeatureLabel === 'Smart Query';
+        const endpoint = isSmartQuery ? '/smart-query' : '/chat';
+        // FIX: Format history correctly for the specific endpoint
+        let historyPayload = isSmartQuery ? 
+        this.conversationHistory : 
+        this.messages.filter(m => m.id !== 'welcome').map(m => ({
+            role: m.containerClass === 'user-container' ? 'user' : 'assistant',
+            content: m.text
+        }));
         try {
-            const endpoint = this.selectedFeatureLabel === 'Smart Query' ? '/smart-query' : '/chat';
             const res = await fetch(`${this.BASE_URL}${endpoint}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ question: txt, message: txt, conversationHistory: this.conversationHistory })
+                body: JSON.stringify({ question: txt, message: txt, conversationHistory: historyPayload })
             });
             const data = await res.json();
-            this.processBotResponse(data);
+            this.processBotResponse(data, txt);
         } catch (e) { console.error(e); } 
         finally { this.isLoading = false; this.scrollToBottom(); }
     }
 
-    processBotResponse(data) {
-        const hasRecs = data.data?.records?.length > 0;
+    processBotResponse(data, originalQuestion) {
+        const hasRecs = !!(data.data?.records?.length > 0);
+        
         const msg = {
             id: `bot-${Date.now()}`,
-            text: data.response || "Results:",
-            containerClass: 'bot-container', bubbleClass: 'bot-bubble',
-            hasExplanation: !!data.explanation, explanation: data.explanation,
-            showExplanation: false, toggleLabel: 'Why use this?',
+            text: data.response || (hasRecs ? "Results:" : "Response:"),
+            containerClass: 'bot-container', 
+            bubbleClass: 'bot-bubble',
+            hasExplanation: !!data.explanation, 
+            explanation: data.explanation,
+            showExplanation: false, 
+            toggleLabel: 'Why use this?',
             hasRecords: hasRecs,
-            objectQueried: data.objectQueried,  // Track object for conversation history
-            soql: data.soql,                    // Track SOQL for reference
-            recordCount: data.recordCount,      // Track count
-            childRecordTables: []               // Track child record tables
+            rawRecords: hasRecs ? data.data.records : [], // Required for HTML table
+            objectQueried: data.objectQueried,// Track object for conversation history
+            soql: data.soql,// Track SOQL for reference
+            recordCount: data.recordCount,  // Track count
+            childRecordTables: [] 
         };
 
+        // Safety check: Only process columns/records if they exist
         if (hasRecs) {
-            msg.rawRecords = data.data.records;
-            
-            // Extract columns - handle both simple and related fields (e.g., Account.Name)
-            const firstRecord = data.data.records[0];
+            const firstRecord = data.data.records[0]; 
             const columnInfo = this.extractColumnsWithChildren(firstRecord);
             msg.columns = columnInfo.parentColumns;
             msg.childRecordTables = columnInfo.childTables;
             
-            // Extract field values - handle nested/related fields properly
             msg.records = data.data.records.map((r, i) => ({
                 Id: r.Id || i,
                 fields: msg.columns.map(c => ({ 
@@ -100,20 +109,19 @@ export default class JarvisChatbot extends LightningElement {
                     value: this.getNestedFieldValue(r, c.fieldName),
                     fieldName: c.fieldName
                 })),
-                // Store child records for display
                 childRecords: this.extractChildRecords(r, columnInfo.childTables)
             }));
         }
-        
-        // Add to conversation history for next queries
-        this.conversationHistory = [...this.conversationHistory, {
-            question: msg.text,
-            soql: data.soql,
-            objectQueried: data.objectQueried,
-            recordCount: data.recordCount,
-            results: data.data?.records || []
-        }];
-        
+        // Only update technical history for Smart Query
+        if (this.selectedFeatureLabel === 'Smart Query') {
+            this.conversationHistory = [...this.conversationHistory, {
+                question: originalQuestion,
+                soql: data.soql,
+                objectQueried: data.objectQueried,
+                recordCount: data.recordCount,
+                results: data.data?.records || []
+            }];
+        }
         this.messages = [...this.messages, msg];
     }
 
