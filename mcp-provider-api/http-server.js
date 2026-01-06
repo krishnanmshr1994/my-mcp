@@ -871,67 +871,115 @@ app.post('/generate-soql', async (req, res) => {
   }
 });
 
+async function callLLM(systemPrompt, userContent, temperature = 0.1) {
+    const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${NVIDIA_API_KEY}`,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            model: NVIDIA_MODEL,
+            messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: userContent }
+            ],
+            temperature
+        })
+    });
+    const data = await response.json();
+    return data.choices[0].message.content.trim();
+}
+
+function tryParse(content) {
+    for (const strategy of PARSE_STRATEGIES) {
+        try {
+            const result = strategy.fn(content);
+            console.log(`  ✅ Success with strategy: ${strategy.name}`);
+            return result;
+        } catch (e) {
+            console.log(`  ❌ ${strategy.name} failed: ${e.message}`);
+        }
+    }
+    throw new Error(`All parsing strategies failed. Preview: ${content.substring(0, 100)}`);
+}
+
+async function selfHeal(brokenContent) {
+    console.log(`🔧 Self-healing with LLM...`);
+    const healedContent = await callLLM(
+        "You are a JSON repair specialist. Return ONLY valid JSON.",
+        PROMPTS.heal(brokenContent),
+        0
+    );
+    console.log(`🔧 Healed: ${healedContent.substring(0, 200)}...`);
+    return tryParse(healedContent);
+}
+
+// ============================================
+// MAIN ENDPOINT
+// ============================================
 app.post('/summarize', async (req, res) => {
     try {
-        if (!NVIDIA_API_KEY) return res.status(503).json({ error: 'LLM not configured' });
-        const { textData, isChunk, isFinal } = req.body;
-
-        const systemPrompt = getSummarizeSystemPrompt();
-
-        const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${NVIDIA_API_KEY}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                model: NVIDIA_MODEL,
-                messages: [
-                    { role: "system", content: systemPrompt },
-                    { role: "user", content: textData }
-                ],
-                temperature: 0.1,
-                // Remove response_format: {type: 'json_object'} if it keeps failing, 
-                // as some NVIDIA endpoints handle it poorly.
-            })
-        });
-
-        const data = await response.json();
-        let content = data.choices[0].message.content.trim();
-        console.log(`Raw summary response: ${content}`);
-
-        // --- THE "BULLETPROOF" CLEANER ---
-        // 1. Remove markdown blocks
-        content = content.replace(/```json|```/g, "").trim();
-        console.log(`Remove markdown blocks summary response: ${content}`);
-        // 2. Find the FIRST '{' and the LAST '}'
-        const firstBracket = content.indexOf('{');
-        const lastBracket = content.lastIndexOf('}');
-        
-        if (firstBracket === -1 || lastBracket === -1) {
-            throw new Error("No JSON object found in LLM response");
+        if (!NVIDIA_API_KEY) {
+            return res.status(503).json({ error: 'LLM not configured' });
         }
-        
-        // 3. Slice the string to get ONLY the JSON block
-        content = content.substring(firstBracket, lastBracket + 1);
-        console.log(`Removed bracket summary response: ${content}`);
-        // 4. Sanitize internal newlines that break JSON parsing
-        content = content.replace(/\n/g, "\\n").replace(/\r/g, "\\r");
-        console.log(`Removed regex summary response: ${content}`);
-        // 5. Attempt Parse
-        const finalJson = JSON.parse(content);
-        console.log(`final summary response: ${content}`);
+
+        const { textData, isChunk = false, isFinal = false } = req.body;
+        console.log(`📨 Processing ${isChunk ? 'CHUNK' : 'FULL'} (isFinal: ${isFinal})`);
+
+        const attempts = [
+            { prompt: SUMMARIZE_PROMPTS.base(isChunk), temp: 0.1 },
+            { prompt: SUMMARIZE_PROMPTS.retry(PROMPTS.base(isChunk)), temp: 0 },
+            { prompt: SUMMARIZE_PROMPTS.strict, temp: 0 }
+        ];
+
+        let finalJson;
+        let lastContent;
+
+        // Try 3 attempts with progressive prompts
+        for (let i = 0; i < attempts.length; i++) {
+            try {
+                console.log(`🔄 Attempt ${i + 1}/${attempts.length}`);
+                const content = await callLLM(attempts[i].prompt, textData, attempts[i].temp);
+                console.log(`📥 Response: ${content.substring(0, 150)}...`);
+                
+                finalJson = tryParse(content);
+                console.log(`✅ Parsed on attempt ${i + 1}`);
+                break;
+            } catch (error) {
+                console.log(`⚠️ Attempt ${i + 1} failed: ${error.message}`);
+                lastContent = error.lastContent || content;
+                
+                if (i === attempts.length - 1) {
+                    // Final attempt: self-heal
+                    console.log(`🔧 Final fallback: self-healing...`);
+                    finalJson = await selfHeal(lastContent || textData);
+                }
+            }
+        }
+
+        // Add chunk metadata
+        if (isChunk) {
+            finalJson.isChunk = true;
+            finalJson.isFinal = isFinal;
+        }
+
+        console.log(`📤 Success:`, finalJson);
         res.json(finalJson);
 
     } catch (error) {
-        console.error('❌ Final Failure:', error.message);
-        // Fallback so the LWC doesn't break
+        console.error('❌ Complete failure:', error.message);
         res.status(200).json({ 
-            summary: "Error parsing result. Check server logs.", 
-            sentiment: "Neutral" 
+            summary: "Unable to analyze content. Please try again.", 
+            sentiment: "Neutral",
+            topics: [],
+            error: true,
+            isChunk: req.body.isChunk || false,
+            isFinal: req.body.isFinal || false
         });
     }
 });
+
 app.post('/smart-query', async (req, res) => {
   try {
     if (!NVIDIA_API_KEY) return res.status(503).json({ error: 'LLM not configured' });

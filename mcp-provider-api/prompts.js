@@ -899,27 +899,89 @@ Generate the most accurate, efficient, and executable SOQL query based on the qu
  * Summarize text prompt - used for summarizing content
  * @returns {string} System prompt for summarization
  */
-export function getSummarizeSystemPrompt() {
-  return `You are a JSON-only response bot. 
+const SUMMARIZE_PROMPTSPROMPTS = {
+    base: (isChunk) => `You are a JSON-only response bot${isChunk ? ' processing a CHUNK of a larger document' : ''}.
 Return ONLY valid JSON. No preamble. No markdown. No explanations.
 
 Analyze the provided text and extract:
-1. A concise summary (2-3 sentences)
+1. A ${isChunk ? 'brief summary of THIS chunk (2-3 sentences)' : 'concise summary (1-2 paragraphs)'}
 2. Overall sentiment (Positive, Negative, Neutral, or Mixed)
-3. Key topics or themes (if applicable)
+3. Key topics or themes ${isChunk ? 'in THIS chunk' : ''}
 
-Required Format: 
+REQUIRED FORMAT:
 {
-  "summary": "your concise summary here", 
+  "summary": "your summary here", 
   "sentiment": "Neutral",
   "topics": ["topic1", "topic2"]
 }
 
-Rules:
-- Keep summary under 200 characters if possible
-- Sentiment must be one of: Positive, Negative, Neutral, Mixed
-- Topics are optional but helpful for context`;
-}
+RULES:
+- Sentiment: MUST be exactly one of: Positive, Negative, Neutral, Mixed
+- Topics: Array of 2-5 key themes
+- NO text outside the JSON structure`,
+
+    retry: (basePrompt) => basePrompt + `
+
+⚠️ CRITICAL: Previous attempt produced invalid JSON.
+ENSURE: No text before/after JSON, proper escaping, no trailing commas.`,
+
+    strict: `RETURN ONLY THIS STRUCTURE. NO OTHER TEXT.
+{"summary":"your analysis","sentiment":"Positive","topics":["topic1","topic2"]}
+Fill in your analysis and return ONLY the JSON above.`,
+
+    heal: (brokenContent) => `Fix this broken JSON response. Return ONLY valid JSON.
+
+REQUIRED: {"summary":"string","sentiment":"Positive|Negative|Neutral|Mixed","topics":["array"]}
+
+BROKEN RESPONSE:
+${brokenContent}
+
+Return corrected JSON:`
+};
+const PARSE_STRATEGIES = [
+    {
+        name: 'direct',
+        fn: (content) => JSON.parse(content)
+    },
+    {
+        name: 'remove markdown',
+        fn: (content) => JSON.parse(content.replace(/```json\s*|```\s*/g, "").trim())
+    },
+    {
+        name: 'extract brackets',
+        fn: (content) => {
+            const first = content.indexOf('{');
+            const last = content.lastIndexOf('}');
+            if (first === -1 || last === -1 || first >= last) throw new Error('No valid JSON object');
+            return JSON.parse(content.substring(first, last + 1));
+        }
+    },
+    {
+        name: 'remove prefixes',
+        fn: (content) => {
+            let cleaned = content
+                .replace(/^(Here's the JSON|Here is the|Response:|Output:)\s*/i, "")
+                .replace(/```json|```/g, "")
+                .trim();
+            const first = cleaned.indexOf('{');
+            const last = cleaned.lastIndexOf('}');
+            if (first === -1 || last === -1) throw new Error('No valid JSON object');
+            return JSON.parse(cleaned.substring(first, last + 1));
+        }
+    },
+    {
+        name: 'fix common errors',
+        fn: (content) => {
+            const fixed = content
+                .replace(/```json|```/g, "")
+                .replace(/^[^{]*/, "")
+                .replace(/[^}]*$/, "")
+                .replace(/,(\s*[}\]])/g, '$1')
+                .trim();
+            return JSON.parse(fixed);
+        }
+    }
+];
 
 /**
  * Calculation prompt - used for aggregations on previous query results
