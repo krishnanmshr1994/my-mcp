@@ -11,8 +11,7 @@ import {
   getRelatedQueryPrompt,
   extractConversationContext,
   suggestRelationshipField,
-  SUMMARIZE_PROMPTS,
-  getErrorAnalysisPrompt
+  SUMMARIZE_PROMPTS
 } from './prompts.js';
 
 const app = express();
