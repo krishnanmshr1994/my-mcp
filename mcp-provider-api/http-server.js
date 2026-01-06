@@ -11,7 +11,8 @@ import {
   getRelatedQueryPrompt,
   extractConversationContext,
   suggestRelationshipField,
-  SUMMARIZE_PROMPTS
+  SUMMARIZE_PROMPTS,
+  getErrorAnalysisPrompt
 } from './prompts.js';
 
 const app = express();
@@ -578,21 +579,36 @@ async function generateAndExecuteSOQLWithHealing(question, objectHint, conversat
       
       if (attemptNumber === 1) {
         // First attempt: Generate fresh query
+        console.log(`🆕 Generating fresh query...`);
         soqlResult = await generateSOQLWithContext(question, objectHint, conversationHistory);
       } else {
-        // Retry attempts: Use error analysis to fix query
-        console.log(`🔧 Analyzing error and regenerating query...`);
-        console.log(`   Previous error: ${lastError}`);
+        // 🆕 RETRY WITH FULL ERROR HISTORY
+        console.log(`🔧 Self-healing query (attempt ${attemptNumber})...`);
+        console.log(`   Current error: ${lastError}`);
+        console.log(`   Total failures so far: ${errorHistory.length}`);
+        
+        // 🆕 Check if we're repeating the same error type
+        if (errorHistory.length > 1) {
+          const sameErrorPattern = errorHistory.slice(0, -1).some(h => 
+            h.error.includes('dateTime') && lastError.includes('dateTime') ||
+            h.error.includes('bind variables') && lastError.includes('bind variables')
+          );
+          if (sameErrorPattern) {
+            console.warn(`⚠️ WARNING: Same error type repeated! LLM needs to try a different approach...`);
+          }
+        }
         
         const schema = await getOrgSchema();
         const schemaText = formatSchema(schema);
         
+        // 🆕 Pass COMPLETE error history to the prompt
         const errorPrompt = getErrorAnalysisPrompt(
-          lastQuery, 
-          lastError, 
-          question, 
-          schemaText, 
-          attemptNumber
+          lastQuery,
+          lastError,
+          question,
+          schemaText,
+          attemptNumber,
+          errorHistory  // 🔥 THIS IS THE KEY CHANGE - now passing full history
         );
 
         const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
@@ -603,8 +619,14 @@ async function generateAndExecuteSOQLWithHealing(question, objectHint, conversat
           },
           body: JSON.stringify({
             model: NVIDIA_MODEL,
-            messages: [{ role: 'user', content: errorPrompt }],
-            temperature: 0.1, // Low temperature for precise corrections
+            messages: [
+              { 
+                role: 'system', 
+                content: 'You are a Salesforce SOQL debugging expert. Fix broken queries by analyzing errors and avoiding previous mistakes.' 
+              },
+              { role: 'user', content: errorPrompt }
+            ],
+            temperature: 0,  // 🆕 Always 0 for precise corrections
             max_tokens: 1024
           })
         });
@@ -615,6 +637,8 @@ async function generateAndExecuteSOQLWithHealing(question, objectHint, conversat
 
         const data = await response.json();
         let correctedQuery = data.choices[0].message.content.trim();
+        
+        console.log(`📥 LLM correction response: ${correctedQuery.substring(0, 200)}...`);
         
         // Check if LLM says it's not possible
         if (correctedQuery.startsWith('NOT_POSSIBLE:')) {
@@ -628,12 +652,33 @@ async function generateAndExecuteSOQLWithHealing(question, objectHint, conversat
           };
         }
         
-        // Clean the corrected query
+        // 🆕 Enhanced cleaning logic
         correctedQuery = correctedQuery
-          .replace(/```sql\n?/g, '')
+          .replace(/```sql\n?/gi, '')
+          .replace(/```soql\n?/gi, '')
           .replace(/```\n?/g, '')
           .replace(/^CORRECTED_QUERY:\s*/i, '')
+          .replace(/^QUERY:\s*/i, '')
           .trim();
+        
+        // 🆕 Remove bind variables that LLM might add
+        correctedQuery = correctedQuery
+          .replace(/:(\d{4})/g, '$1')  // :2025 → 2025
+          .replace(/:TODAY/gi, 'TODAY')
+          .replace(/:YESTERDAY/gi, 'YESTERDAY')
+          .replace(/:THIS_WEEK/gi, 'THIS_WEEK')
+          .replace(/:LAST_MONTH/gi, 'LAST_MONTH');
+        
+        // 🆕 Validate that corrected query is different from previous failures
+        const isDuplicate = errorHistory.some(h => h.query === correctedQuery);
+        if (isDuplicate) {
+          console.error(`❌ LLM generated the EXACT SAME query as a previous attempt!`);
+          console.error(`   This indicates the healing process is not learning from errors.`);
+          console.error(`   Query: ${correctedQuery}`);
+          
+          // Force a different approach by throwing error to continue retry loop
+          throw new Error(`LLM repeated a failed query. Need alternative approach.`);
+        }
         
         console.log(`✨ Corrected query: ${correctedQuery}`);
         
@@ -646,6 +691,7 @@ async function generateAndExecuteSOQLWithHealing(question, objectHint, conversat
         };
       }
 
+      // Handle clarification requests
       if (soqlResult.needsClarification) {
         return {
           success: false,
@@ -677,15 +723,18 @@ async function generateAndExecuteSOQLWithHealing(question, objectHint, conversat
 
     } catch (error) {
       lastError = error.message;
+      
+      // 🆕 Add to history with timestamp for better tracking
       errorHistory.push({
         attempt: attemptNumber,
         query: lastQuery,
-        error: lastError
+        error: lastError,
+        timestamp: new Date().toISOString()
       });
       
       console.error(`❌ Attempt ${attemptNumber} failed: ${lastError}`);
       
-      // Check if this is a fatal error that can't be fixed
+      // Check for fatal errors
       const fatalErrors = [
         'Invalid Session ID',
         'INVALID_SESSION_ID',
@@ -693,11 +742,7 @@ async function generateAndExecuteSOQLWithHealing(question, objectHint, conversat
         'Authentication failed'
       ];
       
-      const isFatalError = fatalErrors.some(fatal => 
-        lastError.includes(fatal)
-      );
-      
-      if (isFatalError) {
+      if (fatalErrors.some(fatal => lastError.includes(fatal))) {
         console.error('💀 Fatal error detected, cannot retry');
         return {
           success: false,
@@ -710,9 +755,18 @@ async function generateAndExecuteSOQLWithHealing(question, objectHint, conversat
         };
       }
       
-      // If this was the last attempt, return the error
+      // If max retries reached
       if (attemptNumber >= maxRetries) {
         console.error(`💀 Max retries (${maxRetries}) reached, giving up`);
+        
+        // 🆕 Provide detailed failure summary
+        console.error('\n📋 FAILURE SUMMARY:');
+        errorHistory.forEach(h => {
+          console.error(`  Attempt ${h.attempt}:`);
+          console.error(`    Query: ${h.query?.substring(0, 80)}...`);
+          console.error(`    Error: ${h.error.substring(0, 100)}`);
+        });
+        
         return {
           success: false,
           error: lastError,
@@ -724,12 +778,12 @@ async function generateAndExecuteSOQLWithHealing(question, objectHint, conversat
         };
       }
       
-      // Otherwise, continue to next attempt
-      console.log(`🔄 Retrying with error correction...`);
+      // Continue to next attempt
+      console.log(`🔄 Retrying with error correction (${attemptNumber + 1}/${maxRetries})...`);
     }
   }
 
-  // Should never reach here, but just in case
+  // Should never reach here
   return {
     success: false,
     error: 'Unexpected error in retry loop',
