@@ -10,7 +10,8 @@ import {
   getErrorAnalysisPrompt,
   getRelatedQueryPrompt,
   extractConversationContext,
-  suggestRelationshipField
+  suggestRelationshipField,
+  SUMMARIZE_PROMPTS
 } from './prompts.js';
 
 const app = express();
@@ -871,6 +872,50 @@ app.post('/generate-soql', async (req, res) => {
   }
 });
 
+const PARSE_STRATEGIES = [
+    {
+        name: 'direct',
+        fn: (content) => JSON.parse(content)
+    },
+    {
+        name: 'remove markdown',
+        fn: (content) => JSON.parse(content.replace(/```json\s*|```\s*/g, "").trim())
+    },
+    {
+        name: 'extract brackets',
+        fn: (content) => {
+            const first = content.indexOf('{');
+            const last = content.lastIndexOf('}');
+            if (first === -1 || last === -1 || first >= last) throw new Error('No valid JSON object');
+            return JSON.parse(content.substring(first, last + 1));
+        }
+    },
+    {
+        name: 'remove prefixes',
+        fn: (content) => {
+            let cleaned = content
+                .replace(/^(Here's the JSON|Here is the|Response:|Output:)\s*/i, "")
+                .replace(/```json|```/g, "")
+                .trim();
+            const first = cleaned.indexOf('{');
+            const last = cleaned.lastIndexOf('}');
+            if (first === -1 || last === -1) throw new Error('No valid JSON object');
+            return JSON.parse(cleaned.substring(first, last + 1));
+        }
+    },
+    {
+        name: 'fix common errors',
+        fn: (content) => {
+            const fixed = content
+                .replace(/```json|```/g, "")
+                .replace(/^[^{]*/, "")
+                .replace(/[^}]*$/, "")
+                .replace(/,(\s*[}\]])/g, '$1')
+                .trim();
+            return JSON.parse(fixed);
+        }
+    }
+];
 async function callLLM(systemPrompt, userContent, temperature = 0.1) {
     const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
         method: "POST",
@@ -890,7 +935,6 @@ async function callLLM(systemPrompt, userContent, temperature = 0.1) {
     const data = await response.json();
     return data.choices[0].message.content.trim();
 }
-
 function tryParse(content) {
     for (const strategy of PARSE_STRATEGIES) {
         try {
@@ -904,61 +948,76 @@ function tryParse(content) {
     throw new Error(`All parsing strategies failed. Preview: ${content.substring(0, 100)}`);
 }
 
+/**
+ * Uses LLM to repair malformed JSON
+ */
 async function selfHeal(brokenContent) {
     console.log(`🔧 Self-healing with LLM...`);
     const healedContent = await callLLM(
         "You are a JSON repair specialist. Return ONLY valid JSON.",
-        PROMPTS.heal(brokenContent),
+        SUMMARIZE_PROMPTS.heal(brokenContent),
         0
     );
     console.log(`🔧 Healed: ${healedContent.substring(0, 200)}...`);
     return tryParse(healedContent);
 }
-
-// ============================================
-// MAIN ENDPOINT
-// ============================================
+/*
+API endpoint to summarize text data
+Implements multiple attempts with progressive prompts and self-healing
+*/
 app.post('/summarize', async (req, res) => {
     try {
+        // Validate API configuration
         if (!NVIDIA_API_KEY) {
             return res.status(503).json({ error: 'LLM not configured' });
         }
 
+        // Extract request parameters
         const { textData, isChunk = false, isFinal = false } = req.body;
         console.log(`📨 Processing ${isChunk ? 'CHUNK' : 'FULL'} (isFinal: ${isFinal})`);
 
+        // Define retry attempts with progressive SUMMARIZE_PROMPTS
         const attempts = [
             { prompt: SUMMARIZE_PROMPTS.base(isChunk), temp: 0.1 },
-            { prompt: SUMMARIZE_PROMPTS.retry(PROMPTS.base(isChunk)), temp: 0 },
+            { prompt: SUMMARIZE_PROMPTS.retry(SUMMARIZE_PROMPTS.base(isChunk)), temp: 0 },
             { prompt: SUMMARIZE_PROMPTS.strict, temp: 0 }
         ];
 
         let finalJson;
         let lastContent;
 
-        // Try 3 attempts with progressive prompts
+        // Try multiple attempts with increasingly strict prompts
         for (let i = 0; i < attempts.length; i++) {
             try {
                 console.log(`🔄 Attempt ${i + 1}/${attempts.length}`);
+                
+                // Call LLM
                 const content = await callLLM(attempts[i].prompt, textData, attempts[i].temp);
                 console.log(`📥 Response: ${content.substring(0, 150)}...`);
                 
+                // Try to parse response
                 finalJson = tryParse(content);
-                console.log(`✅ Parsed on attempt ${i + 1}`);
+                console.log(`✅ Parsed successfully on attempt ${i + 1}`);
                 break;
+                
             } catch (error) {
                 console.log(`⚠️ Attempt ${i + 1} failed: ${error.message}`);
-                lastContent = error.lastContent || content;
+                lastContent = content;
                 
+                // Final attempt: use self-healing
                 if (i === attempts.length - 1) {
-                    // Final attempt: self-heal
                     console.log(`🔧 Final fallback: self-healing...`);
-                    finalJson = await selfHeal(lastContent || textData);
+                    try {
+                        finalJson = await selfHeal(lastContent || textData);
+                    } catch (healError) {
+                        console.error(`❌ Self-heal failed: ${healError.message}`);
+                        throw error; // Re-throw to hit the outer catch
+                    }
                 }
             }
         }
 
-        // Add chunk metadata
+        // Add chunk metadata if processing chunks
         if (isChunk) {
             finalJson.isChunk = true;
             finalJson.isFinal = isFinal;
@@ -969,6 +1028,9 @@ app.post('/summarize', async (req, res) => {
 
     } catch (error) {
         console.error('❌ Complete failure:', error.message);
+        console.error('Stack:', error.stack);
+        
+        // Return safe fallback to prevent UI breakage
         res.status(200).json({ 
             summary: "Unable to analyze content. Please try again.", 
             sentiment: "Neutral",

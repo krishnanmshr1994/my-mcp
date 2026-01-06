@@ -899,7 +899,8 @@ Generate the most accurate, efficient, and executable SOQL query based on the qu
  * Summarize text prompt - used for summarizing content
  * @returns {string} System prompt for summarization
  */
-const SUMMARIZE_PROMPTSPROMPTS = {
+
+export const SUMMARIZE_PROMPTS = {
     base: (isChunk) => `You are a JSON-only response bot${isChunk ? ' processing a CHUNK of a larger document' : ''}.
 Return ONLY valid JSON. No preamble. No markdown. No explanations.
 
@@ -938,50 +939,15 @@ ${brokenContent}
 
 Return corrected JSON:`
 };
-const PARSE_STRATEGIES = [
-    {
-        name: 'direct',
-        fn: (content) => JSON.parse(content)
-    },
-    {
-        name: 'remove markdown',
-        fn: (content) => JSON.parse(content.replace(/```json\s*|```\s*/g, "").trim())
-    },
-    {
-        name: 'extract brackets',
-        fn: (content) => {
-            const first = content.indexOf('{');
-            const last = content.lastIndexOf('}');
-            if (first === -1 || last === -1 || first >= last) throw new Error('No valid JSON object');
-            return JSON.parse(content.substring(first, last + 1));
-        }
-    },
-    {
-        name: 'remove prefixes',
-        fn: (content) => {
-            let cleaned = content
-                .replace(/^(Here's the JSON|Here is the|Response:|Output:)\s*/i, "")
-                .replace(/```json|```/g, "")
-                .trim();
-            const first = cleaned.indexOf('{');
-            const last = cleaned.lastIndexOf('}');
-            if (first === -1 || last === -1) throw new Error('No valid JSON object');
-            return JSON.parse(cleaned.substring(first, last + 1));
-        }
-    },
-    {
-        name: 'fix common errors',
-        fn: (content) => {
-            const fixed = content
-                .replace(/```json|```/g, "")
-                .replace(/^[^{]*/, "")
-                .replace(/[^}]*$/, "")
-                .replace(/,(\s*[}\]])/g, '$1')
-                .trim();
-            return JSON.parse(fixed);
-        }
-    }
-];
+
+// Legacy exports for backward compatibility
+export function getSummarizeSystemPrompt() {
+    return SUMMARIZE_PROMPTS.base(false);
+}
+
+export function getChunkSummarizeSystemPrompt() {
+    return SUMMARIZE_PROMPTS.base(true);
+}
 
 /**
  * Calculation prompt - used for aggregations on previous query results
