@@ -905,7 +905,7 @@ export const SUMMARIZE_PROMPTS = {
 Return ONLY valid JSON. No preamble. No markdown. No explanations.
 
 Analyze the provided text and extract:
-1. A ${isChunk ? 'brief summary of THIS chunk (2-3 sentences)' : 'concise summary (1-2 paragraphs)'}
+1. A ${isChunk ? 'brief summary of THIS chunk (few paragraphs )' : 'concise summary (1-2 paragraphs)'}
 2. Overall sentiment (Positive, Negative, Neutral, or Mixed)
 3. Key topics or themes ${isChunk ? 'in THIS chunk' : ''}
 
