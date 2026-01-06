@@ -919,6 +919,7 @@ REQUIRED FORMAT:
 RULES:
 - Sentiment: MUST be exactly one of: Positive, Negative, Neutral, Mixed
 - Topics: Array of 2-5 key themes
+Ensure that no ciritical information is omitted.
 - NO text outside the JSON structure`,
 
     retry: (basePrompt) => basePrompt + `
