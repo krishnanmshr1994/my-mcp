@@ -1,20 +1,60 @@
-.sentiment-badge {
-    padding: 0.2rem 0.75rem;
-    border-radius: 12px;
-    font-size: 0.75rem;
-    font-weight: bold;
-    text-transform: uppercase;
+.custom-header {
+    margin: 0;
+    padding: 0.75rem 1rem;
+    border-radius: 4px 4px 0 0;
 }
-.positive { background: #d4edda; color: #155724; }
-.negative { background: #f8d7da; color: #721c24; }
-.mixed, .neutral { background: #fff3cd; color: #856404; }
+.header-positive { background: #2e844a; }
+.header-negative { background: #ea001e; }
+.header-neutral  { background: #706e6b; }
 
-.news-row {
-    padding: 10px 0;
-    border-bottom: 1px solid #f3f3f3;
+.sentiment-tag {
+    background: rgba(255, 255, 255, 0.2);
+    padding: 4px 12px;
+    border-radius: 15px;
+    color: white;
+    font-weight: bold;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
 }
+
+.news-item {
+    display: flex;
+    background: #f8f9fb;
+    border: 1px solid #e5e5e5;
+    border-radius: 4px;
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+    transition: all 0.2s;
+}
+
+.news-item:hover {
+    transform: translateX(4px);
+    box-shadow: 2px 2px 8px rgba(0,0,0,0.1);
+}
+
+.news-indicator {
+    width: 4px;
+    background: #0176d3;
+}
+
+.news-content {
+    padding: 12px;
+    width: 100%;
+}
+
 .news-text {
     font-size: 0.9rem;
-    line-height: 1.4;
-    color: #3e3e3c;
+    color: #181818;
+    line-height: 1.5;
+    margin-bottom: 4px;
+}
+
+.news-source {
+    font-size: 0.7rem;
+    color: #747474;
+    font-style: italic;
+    display: flex;
+    align-items: center;
 }

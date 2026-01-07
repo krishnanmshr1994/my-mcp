@@ -18,21 +18,26 @@ export default class ClientNews extends LightningElement {
         getNewsSummary({ query })
             .then(result => {
                 const data = JSON.parse(result);
-                // The summary key contains stringified JSON array
                 this.newsItems = typeof data.summary === 'string' ? JSON.parse(data.summary) : data.summary;
-                this.sentiment = data.sentiment;
+                this.sentiment = data.sentiment || 'Neutral';
                 this.loading = false;
             })
             .catch(err => {
-                this.error = err.body?.message || 'Error fetching news';
+                this.error = 'Failed to load intelligence.';
                 this.loading = false;
             });
     }
 
-    get sentimentBadgeClass() {
-        const base = 'slds-badge ';
-        if (this.sentiment === 'Positive') return base + 'sentiment-positive';
-        if (this.sentiment === 'Negative') return base + 'sentiment-negative';
-        return base + 'sentiment-neutral';
+    get headerClass() {
+        let base = 'slds-card__header slds-grid custom-header ';
+        if (this.sentiment === 'Positive') return base + 'header-positive';
+        if (this.sentiment === 'Negative') return base + 'header-negative';
+        return base + 'header-neutral';
+    }
+
+    get sentimentIcon() {
+        if (this.sentiment === 'Positive') return 'utility:trending_up';
+        if (this.sentiment === 'Negative') return 'utility:trending_down';
+        return 'utility:dash';
     }
 }

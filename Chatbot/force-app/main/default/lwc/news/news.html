@@ -1,38 +1,49 @@
 <template>
-    <article class="slds-card slds-card_boundary custom-card">
-        <div class="slds-card__header slds-grid">
+    <article class="slds-card slds-card_boundary main-container">
+        <div class={headerClass}>
             <header class="slds-media slds-media_center slds-has-flexi-truncate">
                 <div class="slds-media__figure">
-                    <lightning-icon icon-name="standard:news" size="small"></lightning-icon>
+                    <lightning-icon icon-name="standard:news" size="small" variant="inverse"></lightning-icon>
                 </div>
                 <div class="slds-media__body">
                     <h2 class="slds-card__header-title">
-                        <span>Market Intelligence: {clientName}</span>
+                        <span class="slds-text-color_inverse">Market Intelligence:<b>{clientName}</b> </span>
                     </h2>
                 </div>
                 <template if:true={sentiment}>
                     <div class="slds-no-flex">
-                        <span class={sentimentClass}>{sentiment}</span>
+                        <span class="sentiment-tag">
+                            <lightning-icon icon-name={sentimentIcon} size="xx-small" variant="inverse" class="slds-m-right_xx-small"></lightning-icon>
+                            {sentiment}
+                        </span>
                     </div>
                 </template>
             </header>
         </div>
-        <div class="slds-card__body slds-card__body_inner">
+
+        <div class="slds-card__body slds-card__body_inner slds-p-top_medium">
             <template if:true={loading}>
-                <lightning-spinner alternative-text="Analyzing news..." size="small"></lightning-spinner>
-            </template>
-            
-            <template if:true={error}>
-                <div class="slds-text-color_error">{error}</div>
+                <lightning-spinner alternative-text="Analyzing..." size="medium" variant="brand"></lightning-spinner>
             </template>
 
-            <ul class="news-list">
+            <template if:true={error}>
+                <div class="slds-notify slds-notify_alert slds-theme_error">{error}</div>
+            </template>
+
+            <div class="news-stack">
                 <template for:each={newsItems} for:item="item">
-                    <li key={item.news} class="news-row">
-                        <p class="news-text">{item.news}</p>
-                    </li>
+                    <div key={item.news} class="news-item">
+                        <div class="news-indicator"></div>
+                        <div class="news-content">
+                            <p class="news-text">{item.news}</p>
+                            <p class="news-source">
+                                <lightning-icon icon-name="utility:link" size="xxx-small" class="slds-m-right_xx-small"></lightning-icon>
+                                {item.news_source}
+                            </p>
+                        </div>
+                    </div>
                 </template>
-            </ul>
+            </div>
         </div>
     </article>
 </template>
