@@ -895,141 +895,6 @@ Analyze the question and respond in ONE of these formats:
 Generate the most accurate, efficient, and executable SOQL query based on the question.`;
 }
 
-export function getErrorAnalysisPrompt(query, error, question, schemaText = '', attemptNumber = 1, errorHistory = []) {
-  return `You are a Salesforce SOQL debugging expert. Analyze the error and generate a CORRECTED query.
-
-=== CRITICAL: LEARN FROM ALL PREVIOUS FAILURES ===
-
-${errorHistory.length > 0 ? `
-PREVIOUS FAILED ATTEMPTS (DO NOT REPEAT ANY OF THESE):
-${errorHistory.map((err) => `
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Attempt ${err.attempt}:
-Query: ${err.query}
-Error: ${err.error}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-`).join('\n')}
-
-⚠️⚠️⚠️ YOU MUST NOT GENERATE ANY QUERY SIMILAR TO THE ABOVE FAILED ATTEMPTS ⚠️⚠️⚠️
-⚠️⚠️⚠️ ANALYZE THE PATTERN OF FAILURES AND TRY A COMPLETELY DIFFERENT APPROACH ⚠️⚠️⚠️
-` : 'This is the first attempt.'}
-
-=== CURRENT FAILURE (Attempt ${attemptNumber}) ===
-
-FAILED QUERY:
-${query}
-
-ERROR MESSAGE:
-${error}
-
-ORIGINAL QUESTION:
-"${question}"
-
-=== COMMON SOQL ERRORS AND FIXES ===
-
-1. YEAR FILTERING (MOST COMMON ERROR):
-   ❌ WHERE CreatedDate != 2025
-   ❌ WHERE CreatedDate = 2025  
-   ❌ WHERE CreatedDate > 2025
-   
-   ✅ CORRECT OPTIONS:
-   • WHERE CALENDAR_YEAR(CreatedDate) != 2025
-   • WHERE NOT (CreatedDate >= 2025-01-01T00:00:00Z AND CreatedDate < 2026-01-01T00:00:00Z)
-   • WHERE CreatedDate < 2025-01-01T00:00:00Z  (before 2025)
-   • WHERE CreatedDate >= 2026-01-01T00:00:00Z (after 2025)
-   
-   For "latest except 2025": 
-   SELECT Id, Name, CreatedDate FROM Account 
-   WHERE CreatedDate < 2025-01-01T00:00:00Z 
-   ORDER BY CreatedDate DESC LIMIT 1
-
-2. BIND VARIABLES (NEVER USE IN SOQL API):
-   ❌ WHERE Amount > :50000
-   ❌ WHERE CreatedDate = :TODAY
-   ❌ WHERE OwnerId = :userId
-   
-   ✅ WHERE Amount > 50000
-   ✅ WHERE CreatedDate = TODAY
-   ✅ WHERE OwnerId = '005...'
-
-3. DATETIME FORMAT:
-   ❌ WHERE CreatedDate = '2025-01-01'  (quoted)
-   ❌ WHERE CreatedDate = 2025  (just year)
-   ❌ WHERE CreatedDate != 2025  (year comparison)
-   
-   ✅ WHERE CreatedDate = 2025-01-01T00:00:00Z
-   ✅ WHERE CreatedDate >= 2025-01-01T00:00:00Z
-   ✅ WHERE CALENDAR_YEAR(CreatedDate) = 2025
-
-4. DATE LITERALS (NO QUOTES):
-   ❌ WHERE CreatedDate = 'TODAY'
-   ❌ WHERE CreatedDate > 'LAST_MONTH'
-   
-   ✅ WHERE CreatedDate = TODAY
-   ✅ WHERE CreatedDate > LAST_MONTH
-
-5. INCOMPLETE WHERE CLAUSES:
-   ❌ WHERE CreatedDate != 2025 AND CreatedDate
-   ❌ WHERE Amount > 50000 AND
-   
-   ✅ WHERE CreatedDate < 2025-01-01T00:00:00Z
-   ✅ WHERE Amount > 50000
-
-6. QUOTED NUMBERS:
-   ❌ WHERE Amount = '50000'
-   ❌ WHERE AnnualRevenue > '1000000'
-   
-   ✅ WHERE Amount = 50000
-   ✅ WHERE AnnualRevenue > 1000000
-
-7. "No such column" ERRORS:
-   ❌ SELECT What.Industry FROM Task (polymorphic limitation)
-   ❌ SELECT Address FROM Account (compound field)
-   
-   ✅ SELECT WhatId, What.Name, What.Type FROM Task
-   ✅ SELECT BillingStreet, BillingCity FROM Account
-
-=== ERROR ANALYSIS PROCESS ===
-
-Step 1: Identify the root cause
-- What syntax error occurred?
-- What did the LLM misunderstand?
-- Which of the common errors above does this match?
-
-Step 2: Check if this error has occurred before
-- Look at the PREVIOUS FAILED ATTEMPTS above
-- If you see the same error type repeated, you MUST try a different approach
-- Don't just tweak the same query - generate something fundamentally different
-
-Step 3: Understand user intent
-- "${question}"
-- What are they really asking for?
-- How should this be expressed in valid SOQL?
-
-Step 4: Generate corrected SOQL
-- Use proper Salesforce syntax
-- Avoid ALL patterns from failed attempts
-- If previous attempts used one approach, try a different approach
-- Ensure the query is complete and executable
-
-Step 5: Verify the fix
-- Does it address the error?
-- Is it DIFFERENT from ALL previous attempts?
-- Would Salesforce accept this syntax?
-- Did I avoid repeating the same mistake?
-
-=== SCHEMA CONTEXT ===
-${schemaText}
-
-=== YOUR RESPONSE ===
-
-If fixable: Return ONLY the corrected SOQL query (no markdown, no explanation, no code blocks)
-If not possible: Return "NOT_POSSIBLE: [brief reason]"
-
-Generate the corrected query now:`;
-}
-
-
 /**
  * Summarize text prompt - used for summarizing content
  * @returns {string} System prompt for summarization
@@ -1291,7 +1156,7 @@ Analyze the error message to identify the root cause:
    - Invalid date format
    
    Solutions:
-   - Check SQL syntax carefully
+   - Check SOQL syntax carefully
    - Ensure text values have single quotes
    - Use correct operators (=, !=, IN, LIKE)
    - Use proper date literals (TODAY, LAST_N_DAYS:7)
@@ -1320,6 +1185,60 @@ Analyze the error message to identify the root cause:
    Solutions:
    - Add GROUP BY clause
    - Or restructure query
+7. YEAR FILTERING (MOST COMMON ERROR):
+   ❌ WHERE CreatedDate != 2025
+   ❌ WHERE CreatedDate = 2025  
+   ❌ WHERE CreatedDate > 2025
+   
+   ✅ CORRECT OPTIONS:
+   • WHERE CALENDAR_YEAR(CreatedDate) != 2025
+   • WHERE NOT (CreatedDate >= 2025-01-01T00:00:00Z AND CreatedDate < 2026-01-01T00:00:00Z)
+   • WHERE CreatedDate < 2025-01-01T00:00:00Z  (before 2025)
+   • WHERE CreatedDate >= 2026-01-01T00:00:00Z (after 2025)
+   
+   For "latest except 2025": 
+   SELECT Id, Name, CreatedDate FROM Account 
+   WHERE CreatedDate < 2025-01-01T00:00:00Z 
+   ORDER BY CreatedDate DESC LIMIT 1
+
+8. BIND VARIABLES (NEVER USE IN SOQL API):
+   ❌ WHERE Amount > :50000
+   ❌ WHERE CreatedDate = :TODAY
+   ❌ WHERE OwnerId = :userId
+   
+   ✅ WHERE Amount > 50000
+   ✅ WHERE CreatedDate = TODAY
+   ✅ WHERE OwnerId = '005...'
+
+9. DATETIME FORMAT:
+   ❌ WHERE CreatedDate = '2025-01-01'  (quoted)
+   ❌ WHERE CreatedDate = 2025  (just year)
+   ❌ WHERE CreatedDate != 2025  (year comparison)
+   
+   ✅ WHERE CreatedDate = 2025-01-01T00:00:00Z
+   ✅ WHERE CreatedDate >= 2025-01-01T00:00:00Z
+   ✅ WHERE CALENDAR_YEAR(CreatedDate) = 2025
+
+10. DATE LITERALS (NO QUOTES):
+   ❌ WHERE CreatedDate = 'TODAY'
+   ❌ WHERE CreatedDate > 'LAST_MONTH'
+   
+   ✅ WHERE CreatedDate = TODAY
+   ✅ WHERE CreatedDate > LAST_MONTH
+
+11. INCOMPLETE WHERE CLAUSES:
+   ❌ WHERE CreatedDate != 2025 AND CreatedDate
+   ❌ WHERE Amount > 50000 AND
+   
+   ✅ WHERE CreatedDate < 2025-01-01T00:00:00Z
+   ✅ WHERE Amount > 50000
+
+12. QUOTED NUMBERS:
+   ❌ WHERE Amount = '50000'
+   ❌ WHERE AnnualRevenue > '1000000'
+   
+   ✅ WHERE Amount = 50000
+   ✅ WHERE AnnualRevenue > 1000000
 
 === YOUR TASK ===
 
@@ -1327,6 +1246,32 @@ Analyze the error message to identify the root cause:
 2. Determine the root cause
 3. Generate a CORRECTED SOQL query that will execute successfully
 4. Ensure the corrected query still answers the original question
+5: Identify the root cause
+- What syntax error occurred?
+- What did the LLM misunderstand?
+- Which of the common errors above does this match?
+
+6: Check if this error has occurred before
+- Look at the PREVIOUS FAILED ATTEMPTS above
+- If you see the same error type repeated, you MUST try a different approach
+- Don't just tweak the same query - generate something fundamentally different
+
+7: Understand user intent
+- "${question}"
+- What are they really asking for?
+- How should this be expressed in valid SOQL?
+
+8: Generate corrected SOQL
+- Use proper Salesforce syntax
+- Avoid ALL patterns from failed attempts
+- If previous attempts used one approach, try a different approach
+- Ensure the query is complete and executable
+
+9: Verify the fix
+- Does it address the error?
+- Is it DIFFERENT from ALL previous attempts?
+- Would Salesforce accept this syntax?
+- Did I avoid repeating the same mistake?
 
 === CRITICAL RULES FOR CORRECTION ===
 
