@@ -1,50 +1,36 @@
 <template>
-    <template if:true={renderNews}>
-        <div class="flip-card" onclick={handleFlip}>
-            <div class={cardClass}>
-                
-                <div class="flip-card-front">
-                    <lightning-card title={newsArticles.header} icon-name="standard:news">
-                        <div slot="actions">
-                            <span class={sentimentClass}>
-                                <lightning-icon 
-                                    icon-name={sentimentIcon} 
-                                    size="x-small" 
-                                    variant={sentimentVariant}>
-                                </lightning-icon>
-                                <span class="slds-m-left_xx-small">{sentiment}</span>
-                            </span>
-                        </div>
-
-                        <div class="slds-p-around_medium content-area">
-                            <lightning-formatted-rich-text value={newsArticles.content}>
-                            </lightning-formatted-rich-text>
-                        </div>
-                        
-                        <p class="footer-text">Click to see sources</p>
-                    </lightning-card>
-                </div>
-
-                <div class="flip-card-back">
-                    <lightning-card title="Sources" icon-name="standard:announcement">
-                        <div class="slds-p-around_medium content-area">
-                            <ul class="slds-list_dotted">
-                                <template for:each={newsArticles.source} for:item="item">
-                                    <li key={item} class="slds-m-bottom_x-small">{item}</li>
-                                </template>
-                            </ul>
-                        </div>
-                        <p class="footer-text">Click to return</p>
-                    </lightning-card>
-                </div>
-
+    <div class="client-news-panel">
+        <div class="panel-header">
+            <lightning-icon icon-name="utility:news" size="small" class="news-icon"></lightning-icon>
+            <span class="title-text">
+                News About
+                <template if:true={clientName}>
+                    &nbsp;{clientName}
+                </template>
+            </span>
+        </div>
+        <template if:true={loading}>
+            <div class="panel-body">
+                <lightning-spinner alternative-text="Loading..." size="medium"></lightning-spinner>
             </div>
-        </div>
-    </template>
-
-    <template if:false={renderNews}>
-        <div class="spinner-container">
-            <lightning-spinner alternative-text="Analyzing News..." size="medium"></lightning-spinner>
-        </div>
-    </template>
+        </template>
+        <template if:true={error}>
+            <div class="panel-body error">{error}</div>
+        </template>
+        <template if:true={newsItems.length}>
+            <div class="panel-body news-summary">
+                <ul>
+                    <template for:each={newsItems} for:item="item">
+                        <li key={item.news} class="news-item">
+                            <span>{item.news}</span>
+                            
+                        </li>
+                    </template>
+                </ul>
+            </div>
+        </template>
+        <template if:true={showHint}>
+            <div class="panel-body hint">No summary available yet.</div>
+        </template>
+    </div>
 </template>

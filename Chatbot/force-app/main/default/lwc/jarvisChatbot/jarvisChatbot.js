@@ -130,16 +130,20 @@ export default class JarvisChatbot extends LightningElement {
         const parentColumns = [];
         const childTables = [];
         
-        const processField = (key, prefix = '') => {
+        if (!record) return { parentColumns, childTables };
+
+        const processField = (key) => {
             if (key === 'attributes') return;
             
             const value = record[key];
             
-            // Check if this is a child records collection
-            if (Array.isArray(value) && value.length > 0 && value[0]?.attributes) {
-                // This is a child records array (e.g., Contacts, Cases, CaseComments)
+            // 1. Handle Child Records (Arrays like Contacts, Opportunities)
+            // Check for records property because Salesforce subqueries return { totalSize, done, records: [] }
+            const childData = (value && typeof value === 'object' && value.records) ? value.records : (Array.isArray(value) ? value : null);
+
+            if (Array.isArray(childData) && childData.length > 0) {
                 const childColumns = [];
-                const firstChildRecord = value[0];
+                const firstChildRecord = childData[0];
                 
                 Object.keys(firstChildRecord).forEach(childKey => {
                     if (childKey !== 'attributes' && typeof firstChildRecord[childKey] !== 'object') {
@@ -153,29 +157,29 @@ export default class JarvisChatbot extends LightningElement {
                 if (childColumns.length > 0) {
                     childTables.push({
                         relationshipName: key,
-                        label: `${key} (${value.length})`,
+                        label: `${key} (${childData.length})`,
                         columns: childColumns,
-                        records: value
+                        records: childData
                     });
                 }
                 return;
             }
             
-            // Handle nested objects (e.g., Account, Who, What)
-            if (value && typeof value === 'object' && !Array.isArray(value) && value.attributes) {
-                // This is a related object, extract its fields
+            // 2. Handle Nested Parent Objects (e.g., Account, Who, What)
+            if (value && typeof value === 'object' && !Array.isArray(value)) {
+                // This is a related object (Parent), extract its fields (Name, Phone, etc.)
                 Object.keys(value).forEach(nestedKey => {
                     if (nestedKey !== 'attributes') {
+                        // This creates 'Account.Name' which getNestedFieldValue can resolve
                         const fieldName = `${key}.${nestedKey}`;
                         const label = `${key} ${nestedKey}`;
                         parentColumns.push({ label, fieldName });
                     }
                 });
-            } else if (typeof value !== 'object' || Array.isArray(value)) {
-                // Simple field (but skip arrays)
-                if (!Array.isArray(value)) {
-                    parentColumns.push({ label: key, fieldName: key });
-                }
+            } 
+            // 3. Handle Simple Fields (e.g., Id, Name, Status)
+            else if (typeof value !== 'object') {
+                parentColumns.push({ label: key, fieldName: key });
             }
         };
         
