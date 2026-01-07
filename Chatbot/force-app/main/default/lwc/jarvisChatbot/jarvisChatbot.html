@@ -6,7 +6,7 @@
                 <div class="selection-dialogue slds-p-around_medium">
                     <h2 class="slds-text-heading_medium slds-m-bottom_large slds-text-align_center">How can I assist you?</h2>
                     <lightning-layout multiple-rows="true">
-                        <lightning-layout-item size="12" small-device-size="4" padding="around-small">
+                        <lightning-layout-item size="12" small-device-size="3" padding="around-small">
                             <div class="feature-card" onclick={handleSelectQuery}>
                                 <lightning-icon icon-name="utility:table" size="medium"></lightning-icon>
                                 <h3>Smart Query</h3>
@@ -14,7 +14,7 @@
                             </div>
                         </lightning-layout-item>
 
-                        <lightning-layout-item size="12" small-device-size="4" padding="around-small">
+                        <lightning-layout-item size="12" small-device-size="3" padding="around-small">
                             <div class="feature-card" onclick={handleSelectChat}>
                                 <lightning-icon icon-name="utility:chat" size="medium"></lightning-icon>
                                 <h3>General Chat</h3>
@@ -22,11 +22,19 @@
                             </div>
                         </lightning-layout-item>
 
-                        <lightning-layout-item size="12" small-device-size="4" padding="around-small">
+                        <lightning-layout-item size="12" small-device-size="3" padding="around-small">
                             <div class="feature-card" onclick={handleSelectNews}>
                                 <lightning-icon icon-name="utility:news" size="medium"></lightning-icon>
                                 <h3>Account News</h3>
                                 <p>Summarized industry news.</p>
+                            </div>
+                        </lightning-layout-item>
+
+                        <lightning-layout-item size="12" small-device-size="3" padding="around-small">
+                            <div class="feature-card" onclick={handleSelectEmail}>
+                                <lightning-icon icon-name="utility:email" size="medium" variant="success"></lightning-icon>
+                                <h3>Email Assistant</h3>
+                                <p>Draft professional emails.</p>
                             </div>
                         </lightning-layout-item>
                     </lightning-layout>

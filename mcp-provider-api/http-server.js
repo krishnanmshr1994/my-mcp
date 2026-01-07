@@ -8,9 +8,7 @@ import {
   getExplanationPrompt, 
   getChatSystemPrompt, 
   getErrorAnalysisPrompt,
-  getRelatedQueryPrompt,
-  extractConversationContext,
-  suggestRelationshipField,
+  getEmailAssistantPrompt,
   SUMMARIZE_PROMPTS
 } from './prompts.js';
 
@@ -236,6 +234,46 @@ async function getEnrichedSchema(objectsToEnrich = null) {
   
   return enrichedSchema;
 }
+/*============================================
+// Email Assistant Route
+// ============================================
+*/
+
+// Add the route
+app.post('/email-assist', async (req, res) => {
+  try {
+    const { message, conversationHistory = [] } = req.body;
+
+    const messages = [
+      { role: 'system', content: getEmailAssistantPrompt(message, conversationHistory) },
+      ...conversationHistory,
+      { role: 'user', content: message }
+    ];
+
+    const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${NVIDIA_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: NVIDIA_MODEL,
+        messages,
+        temperature: 0.7, // Higher for better writing flow
+        max_tokens: 1024
+      })
+    });
+
+    const data = await response.json();
+    res.json({
+      response: data.choices[0].message.content,
+      model: NVIDIA_MODEL
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // ============================================
 // IMPROVED SOQL GENERATION
