@@ -17,11 +17,15 @@ export default class JarvisChatbot extends LightningElement {
         this.isMobile = window.innerWidth <= 768 || /SalesforceMobileSDK|Salesforce1/i.test(navigator.userAgent);
     }
 
+    // GETTERS
     get isChatActive() { 
         return this.viewMode === 'chat'; 
     }
     get isNewsActive() { 
         return this.viewMode === 'news'; 
+    }
+    get isEmailMode() { 
+        return this.selectedFeatureLabel === 'Email Assistant'; 
     }
     get isNewsDisabled() { 
         return !this.newsAccountName.trim(); 
@@ -50,7 +54,8 @@ export default class JarvisChatbot extends LightningElement {
             id: 'welcome', 
             text: welcomeMsg, 
             containerClass: 'bot-container', 
-            bubbleClass: 'bot-bubble' 
+            bubbleClass: 'bot-bubble',
+            isBot: true // Flag for EmailAssistant component
         }];
     }
 
@@ -82,7 +87,8 @@ export default class JarvisChatbot extends LightningElement {
             id: Date.now(), 
             text: txt, 
             containerClass: 'user-container', 
-            bubbleClass: 'user-bubble' 
+            bubbleClass: 'user-bubble',
+            isBot: false
         }];
         
         this.isLoading = true;
@@ -90,7 +96,7 @@ export default class JarvisChatbot extends LightningElement {
         // Determine Endpoint
         let endpoint = '/chat';
         if (this.selectedFeatureLabel === 'Smart Query') endpoint = '/smart-query';
-        if (this.selectedFeatureLabel === 'Email Assistant') endpoint = '/chat'; // Uses general chat but with email context
+        if (this.selectedFeatureLabel === 'Email Assistant') endpoint = '/email-assist';
 
         // Format History
         let historyPayload = this.selectedFeatureLabel === 'Smart Query' ? 
@@ -118,7 +124,8 @@ export default class JarvisChatbot extends LightningElement {
                 id: 'err', 
                 text: 'Connection error.', 
                 containerClass: 'bot-container', 
-                bubbleClass: 'bot-bubble' 
+                bubbleClass: 'bot-bubble',
+                isBot: true 
             }];
         } finally { 
             this.isLoading = false; 
@@ -134,6 +141,7 @@ export default class JarvisChatbot extends LightningElement {
             text: data.response || (hasRecs ? "Results found:" : "Processed."),
             containerClass: 'bot-container', 
             bubbleClass: 'bot-bubble',
+            isBot: true,
             hasExplanation: !!data.explanation, 
             explanation: data.explanation,
             showExplanation: false, 
@@ -171,7 +179,7 @@ export default class JarvisChatbot extends LightningElement {
         this.messages = [...this.messages, msg];
     }
 
-    // HELPERS
+    // HELPERS (FULL ORIGINAL PARSING LOGIC)
     extractColumnsWithChildren(record) {
         const parentColumns = [];
         const childTables = [];
@@ -182,12 +190,14 @@ export default class JarvisChatbot extends LightningElement {
             const value = record[key];
 
             if (value && typeof value === 'object' && !Array.isArray(value)) {
+                // Handle Lookups/Relationships
                 Object.keys(value).forEach(nestedKey => {
                     if (nestedKey !== 'attributes') {
                         parentColumns.push({ label: `${key} ${nestedKey}`, fieldName: `${key}.${nestedKey}` });
                     }
                 });
             } else if (typeof value !== 'object') {
+                // Handle Standard Fields
                 parentColumns.push({ label: key, fieldName: key });
             }
         });

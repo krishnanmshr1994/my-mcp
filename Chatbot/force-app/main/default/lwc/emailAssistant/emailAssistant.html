@@ -1,0 +1,34 @@
+<template>
+    <div class="email-container">
+        <template if:true={isDraft}>
+            <div class="email-draft-card slds-p-around_medium">
+                <div class="draft-header slds-m-bottom_small">
+                    <lightning-icon icon-name="utility:email" size="small" class="slds-m-right_small"></lightning-icon>
+                    <strong>Generated Draft</strong>
+                    <lightning-button-icon 
+                        icon-name="utility:copy" 
+                        variant="border-filled" 
+                        alternative-text="Copy to Clipboard" 
+                        onclick={handleCopy} 
+                        class="slds-float_right">
+                    </lightning-button-icon>
+                </div>
+                
+                <div class="subject-line slds-p-vertical_x-small slds-border_bottom">
+                    <span class="slds-text-title_caps slds-m-right_x-small">Subject:</span>
+                    <span class="subject-text">{subject}</span>
+                </div>
+
+                <div class="email-body slds-p-top_small">
+                    <lightning-formatted-rich-text value={body}></lightning-formatted-rich-text>
+                </div>
+            </div>
+        </template>
+
+        <template if:false={isDraft}>
+            <div class="consult-bubble">
+                <lightning-formatted-rich-text value={content}></lightning-formatted-rich-text>
+            </div>
+        </template>
+    </div>
+</template>

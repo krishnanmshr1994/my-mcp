@@ -1,0 +1,31 @@
+.email-draft-card {
+    background: #ffffff;
+    border: 2px solid #0070d2;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    width: 100%;
+    color: #181818;
+}
+
+.draft-header {
+    display: flex;
+    align-items: center;
+    color: #0070d2;
+}
+
+.subject-line {
+    font-weight: bold;
+    color: #3e3e3c;
+}
+
+.email-body {
+    white-space: pre-wrap;
+    line-height: 1.6;
+}
+
+.consult-bubble {
+    background: #eef4ff;
+    padding: 12px;
+    border-radius: 12px 12px 12px 0;
+    border: 1px solid #adc9ff;
+}
