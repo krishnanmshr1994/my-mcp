@@ -1,36 +1,38 @@
 <template>
-    <div class="client-news-panel">
-        <div class="panel-header">
-            <lightning-icon icon-name="utility:news" size="small" class="news-icon"></lightning-icon>
-            <span class="title-text">
-                News About
-                <template if:true={clientName}>
-                    &nbsp;{clientName}
+    <article class="slds-card slds-card_boundary custom-card">
+        <div class="slds-card__header slds-grid">
+            <header class="slds-media slds-media_center slds-has-flexi-truncate">
+                <div class="slds-media__figure">
+                    <lightning-icon icon-name="standard:news" size="small"></lightning-icon>
+                </div>
+                <div class="slds-media__body">
+                    <h2 class="slds-card__header-title">
+                        <span>Market Intelligence: {clientName}</span>
+                    </h2>
+                </div>
+                <template if:true={sentiment}>
+                    <div class="slds-no-flex">
+                        <span class={sentimentClass}>{sentiment}</span>
+                    </div>
                 </template>
-            </span>
+            </header>
         </div>
-        <template if:true={loading}>
-            <div class="panel-body">
-                <lightning-spinner alternative-text="Loading..." size="medium"></lightning-spinner>
-            </div>
-        </template>
-        <template if:true={error}>
-            <div class="panel-body error">{error}</div>
-        </template>
-        <template if:true={newsItems.length}>
-            <div class="panel-body news-summary">
-                <ul>
-                    <template for:each={newsItems} for:item="item">
-                        <li key={item.news} class="news-item">
-                            <span>{item.news}</span>
-                            
-                        </li>
-                    </template>
-                </ul>
-            </div>
-        </template>
-        <template if:true={showHint}>
-            <div class="panel-body hint">No summary available yet.</div>
-        </template>
-    </div>
+        <div class="slds-card__body slds-card__body_inner">
+            <template if:true={loading}>
+                <lightning-spinner alternative-text="Analyzing news..." size="small"></lightning-spinner>
+            </template>
+            
+            <template if:true={error}>
+                <div class="slds-text-color_error">{error}</div>
+            </template>
+
+            <ul class="news-list">
+                <template for:each={newsItems} for:item="item">
+                    <li key={item.news} class="news-row">
+                        <p class="news-text">{item.news}</p>
+                    </li>
+                </template>
+            </ul>
+        </div>
+    </article>
 </template>

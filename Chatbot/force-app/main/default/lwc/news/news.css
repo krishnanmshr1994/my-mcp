@@ -1,61 +1,20 @@
-:host {
-    display: block;
-    width: 100%;
-}
-
-.spinner-container {
-    height: 350px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid #dddbda;
-}
-
-.flip-card {
-    width: 100%;
-    height: 350px;
-    perspective: 1000px;
-}
-
-.flip-card-inner {
-    position: relative;
-    width: 100%;
-    height: 100%;
-    transition: transform 0.6s;
-    transform-style: preserve-3d;
-}
-
-.flipped { transform: rotateY(180deg); }
-
-.flip-card-front, .flip-card-back {
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    backface-visibility: hidden;
-    top: 0;
-    left: 0;
-    box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2);
-    border-radius: 4px;
-}
-
-.flip-card-back { transform: rotateY(180deg); }
-
-lightning-card {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-}
-
-.content-area {
-    flex-grow: 1;
-    height: 240px; 
-    overflow-y: auto;
-    text-align: left;
-}
-
-.footer-text {
-    text-align: center;
-    color: #747474;
+.sentiment-badge {
+    padding: 0.2rem 0.75rem;
+    border-radius: 12px;
     font-size: 0.75rem;
-    padding: 5px;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+.positive { background: #d4edda; color: #155724; }
+.negative { background: #f8d7da; color: #721c24; }
+.mixed, .neutral { background: #fff3cd; color: #856404; }
+
+.news-row {
+    padding: 10px 0;
+    border-bottom: 1px solid #f3f3f3;
+}
+.news-text {
+    font-size: 0.9rem;
+    line-height: 1.4;
+    color: #3e3e3c;
 }
