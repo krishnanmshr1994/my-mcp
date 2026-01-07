@@ -1,8 +1,33 @@
+.main-container {
+    height: 450px; /* Adjust total height as needed */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* Prevent the outer card from scrolling */
+}
+
 .custom-header {
+    flex: 0 0 auto; /* Header stays fixed size */
     margin: 0;
     padding: 0.75rem 1rem;
     border-radius: 4px 4px 0 0;
 }
+
+.scrollable-content {
+    flex: 1 1 auto; /* Body takes remaining space */
+    overflow-y: auto; /* Enable vertical scrolling */
+    scrollbar-width: thin;
+}
+
+/* Scrollbar Styling for Chrome/Safari */
+.scrollable-content::-webkit-scrollbar {
+    width: 6px;
+}
+.scrollable-content::-webkit-scrollbar-thumb {
+    background: #cbd5e0;
+    border-radius: 10px;
+}
+
+/* Keep your existing classes below */
 .header-positive { background: #2e844a; }
 .header-negative { background: #ea001e; }
 .header-neutral  { background: #706e6b; }

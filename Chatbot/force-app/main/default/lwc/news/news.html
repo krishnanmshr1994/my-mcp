@@ -7,7 +7,7 @@
                 </div>
                 <div class="slds-media__body">
                     <h2 class="slds-card__header-title">
-                        <span class="slds-text-color_inverse">Market Intelligence:<b>{clientName}</b> </span>
+                        <span class="slds-text-color_inverse">Market Intelligence: <b>{clientName}</b></span>
                     </h2>
                 </div>
                 <template if:true={sentiment}>
@@ -21,7 +21,7 @@
             </header>
         </div>
 
-        <div class="slds-card__body slds-card__body_inner slds-p-top_medium">
+        <div class="scrollable-content slds-card__body slds-card__body_inner slds-p-top_medium">
             <template if:true={loading}>
                 <lightning-spinner alternative-text="Analyzing..." size="medium" variant="brand"></lightning-spinner>
             </template>
