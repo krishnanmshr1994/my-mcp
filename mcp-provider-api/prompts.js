@@ -907,6 +907,10 @@ Return ONLY valid JSON. No preamble. No markdown. No explanations.
 Analyze the provided text and extract:
 1. A ${isChunk ? 'brief summary of THIS chunk (few paragraphs )' : 'concise summary (5-6 paragraphs)'}
 2. Overall sentiment (Positive, Negative, Neutral, or Mixed). Analyze the text tone and mood for sentiment.Ensure you read it thoroughly and provide overall sentiment.
+- Sentiment Precision: Do NOT default to Neutral. Look for adjectives and intent. 
+- If the text is critical or complaining, use "Negative".
+- If the text is praising or optimistic, use "Positive".
+- If it contains a strong balance of both, use "Mixed".
 3. Key topics or themes ${isChunk ? 'in THIS chunk' : ''}
 
 REQUIRED FORMAT:
