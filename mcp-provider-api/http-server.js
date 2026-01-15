@@ -621,6 +621,7 @@ async function generateAndExecuteSOQLWithHealing(question, objectHint, conversat
       } else {
         // 🆕 RETRY WITH FULL ERROR HISTORY
         console.log(`🔧 Self-healing query (attempt ${attemptNumber})...`);
+        console.log(`Query generated ${soqlResult}`);
         console.log(`   Current error: ${lastError}`);
         console.log(`   Total failures so far: ${errorHistory.length}`);
         
@@ -1175,6 +1176,7 @@ app.post('/smart-query', async (req, res) => {
       });
 
       const llmData = await llmRes.json();
+      console.log(`smart query LLM response>> ${llmData}`);
       const llmResponse = llmData.choices[0].message.content;
       const resultMatch = llmResponse.match(/RESULT:\s*([^\n]+)/i);
       const result = resultMatch ? resultMatch[1].trim() : llmResponse;
